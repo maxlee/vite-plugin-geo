@@ -1,0 +1,59 @@
+{
+  "name": "vite-plugin-geo",
+  "version": "0.1.0",
+  "description": "Vite plugin to generate sitemap.xml, llms.txt, robots.txt, and optional GEO companion files.",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "bin": "./cli.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "pack:dry-run": "npm_config_cache=/tmp/slinedev-npm-cache npm pack --dry-run --json"
+  },
+  "files": [
+    "README.md",
+    "index.js",
+    "index.d.ts",
+    "cli.js",
+    "viteGeoGeneratorPlugin.js",
+    "astroSitemapCompatibility.js",
+    "geoGenerator.js",
+    "geoMetadataResolver.js"
+  ],
+  "keywords": [
+    "vite",
+    "vite-plugin",
+    "geo",
+    "seo",
+    "sitemap",
+    "robots",
+    "llms"
+  ],
+  "author": "maxlee",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxlee/slinedev.git",
+    "directory": "packages/vite-plugin-geo"
+  },
+  "bugs": {
+    "url": "https://github.com/maxlee/slinedev/issues"
+  },
+  "homepage": "https://github.com/maxlee/slinedev/tree/main/packages/vite-plugin-geo#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "peerDependencies": {
+    "vite": "^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0"
+  },
+  "dependencies": {
+    "parse5": "8.0.1",
+    "turndown": "7.2.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
