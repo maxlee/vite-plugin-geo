@@ -1,15 +1,19 @@
 import { spawnSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { describe, expect, it } from 'vitest';
 
-const packageDir = join(process.cwd(), 'packages', 'vite-plugin-geo');
+const packageDir = existsSync(join(process.cwd(), 'package.json'))
+  ? process.cwd()
+  : join(process.cwd(), 'packages', 'vite-plugin-geo');
 const manifestPath = join(packageDir, 'package.json');
 
 describe('vite-plugin-geo publish manifest', () => {
   const expectedPackedFiles = [
     'README.md',
+    'astro.d.ts',
+    'astro.js',
     'astroSitemapCompatibility.js',
     'cli.js',
     'geoGenerator.js',
@@ -30,10 +34,17 @@ describe('vite-plugin-geo publish manifest', () => {
       bin: './cli.js',
       exports: {
         '.': './index.js',
+        './astro': {
+          types: './astro.d.ts',
+          import: './astro.js',
+          default: './astro.js',
+        },
         './package.json': './package.json',
       },
       files: [
         'README.md',
+        'astro.js',
+        'astro.d.ts',
         'index.js',
         'index.d.ts',
         'cli.js',
@@ -72,7 +83,10 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(result.status).toBe(0);
 
     const parsedOutput = JSON.parse(result.stdout);
-    const packedFiles = parsedOutput[0].files.map(({ path }) => path).sort();
+    const packResult = Array.isArray(parsedOutput)
+      ? parsedOutput[0]
+      : Object.values(parsedOutput)[0];
+    const packedFiles = packResult.files.map(({ path }) => path).sort();
 
     expect(packedFiles).toEqual(expectedPackedFiles);
 
@@ -119,6 +133,38 @@ describe('vite-plugin-geo publish manifest', () => {
       geoMatchesDefault: true,
       namedMatchesDefault: true,
       defaultPluginName: 'geo-generator',
+    });
+  });
+
+  it('exposes the Astro integration from its dedicated package entry', () => {
+    const result = spawnSync(
+      'node',
+      [
+        '--input-type=module',
+        '-e',
+        `
+          import geo, { createAstroGeoIntegration } from ${JSON.stringify(pathToFileURL(join(packageDir, 'astro.js')).href)};
+          const integration = geo({ domain: 'https://example.com' });
+          process.stdout.write(JSON.stringify({
+            defaultType: typeof geo,
+            namedMatchesDefault: createAstroGeoIntegration === geo,
+            integrationName: integration?.name || null,
+            hookNames: Object.keys(integration?.hooks || {}).sort(),
+          }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf-8',
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      defaultType: 'function',
+      namedMatchesDefault: true,
+      integrationName: 'vite-plugin-geo',
+      hookNames: ['astro:build:done', 'astro:config:done'],
     });
   });
 });

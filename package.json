@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-geo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Vite plugin to generate sitemap.xml, llms.txt, robots.txt, and optional GEO companion files.",
   "type": "module",
   "main": "./index.js",
@@ -8,6 +8,11 @@
   "bin": "./cli.js",
   "exports": {
     ".": "./index.js",
+    "./astro": {
+      "types": "./astro.d.ts",
+      "import": "./astro.js",
+      "default": "./astro.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -15,6 +20,8 @@
   },
   "files": [
     "README.md",
+    "astro.js",
+    "astro.d.ts",
     "index.js",
     "index.d.ts",
     "cli.js",

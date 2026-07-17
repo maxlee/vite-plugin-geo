@@ -2,7 +2,7 @@
 
 一个强大的 Vite 构建后插件，自动生成 GEO / SEO / AI 友好文件，让你的网站对搜索引擎、LLM 和用户都更友好。
 
-当前版本：`vite-plugin-geo@0.1.0`。支持 Vite 5 / 6 / 7 / 8；在 Vite 8 中会检测 Rolldown 环境，并优先通过 `generateBundle` 输出新增静态文件。
+当前版本：`vite-plugin-geo@0.1.1`。支持 Vite 5 / 6 / 7 / 8；在 Vite 8 中会检测 Rolldown 环境，并优先通过 `generateBundle` 输出新增静态文件。Astro 项目请使用专用的 `vite-plugin-geo/astro` 入口。
 
 ## ✨ 核心特性
 
@@ -30,6 +30,8 @@ bun add -d vite-plugin-geo
 
 ## 🚀 快速开始
 
+### Vite 项目
+
 ```js
 // vite.config.js
 import { defineConfig } from 'vite';
@@ -46,6 +48,25 @@ export default defineConfig({
 
 `domain` 是站点公开访问地址，用于生成 sitemap、robots.txt、feed.xml 和 llms.txt 中的完整 URL。也可以把它写在项目 `package.json` 的 `domain` 字段中；如果两处都配置，`geo({ domain })` 优先。
 如果两处都没有配置，插件会停止生成并提示补充 `domain`，避免产出错误的公开链接。
+
+### Astro 项目
+
+Astro 在内部 Vite 构建结束后才生成最终 HTML，因此不要把默认入口放进 `vite.plugins`。请使用 Astro 专用入口，并放进 `integrations`：
+
+```js
+// astro.config.mjs
+import { defineConfig } from 'astro/config';
+import geo from 'vite-plugin-geo/astro';
+
+export default defineConfig({
+  site: 'https://example.com',
+  integrations: [geo()],
+});
+```
+
+Astro 集成会在静态页面全部生成后创建 GEO 文件。域名读取顺序为 `geo({ domain })`、Astro `site`、`package.json` 的 `domain`；通常已经配置 `site` 时无需重复填写 `domain`。
+
+如果仍然在 `vite.plugins` 中使用默认入口，构建只会显示一次迁移提示，不会继续无效等待 `dist/` 中尚未生成的 HTML。
 
 构建完成后，`dist/` 目录下会自动生成：
 
@@ -96,6 +117,8 @@ dist/
 | `generateHumans` | `boolean` | `false` | humans.txt |
 | `debug` | `boolean` | `false` | 调试日志 |
 
+`distDir` 和三个 `stability*` 选项只用于普通 Vite 插件。Astro 集成始终使用 Astro 提供的最终输出目录，不需要等待配置。
+
 <details>
 <summary>📋 查看完整配置项</summary>
 
@@ -116,7 +139,17 @@ dist/
 
 ## Astro 官方 Sitemap 兼容
 
-如果 Astro 项目已经使用 `@astrojs/sitemap`，不需要改 Astro 配置，也不需要额外配置本插件。`vite-plugin-geo` 会自动检测标准的 Astro sitemap 用法，并做三件事：
+如果 Astro 项目已经使用 `@astrojs/sitemap`，继续把两项集成都放在 `integrations` 中即可。`vite-plugin-geo` 会自动检测标准的 Astro sitemap 用法，并做三件事：
+
+```js
+import sitemap from '@astrojs/sitemap';
+import geo from 'vite-plugin-geo/astro';
+
+export default defineConfig({
+  site: 'https://example.com',
+  integrations: [sitemap(), geo()],
+});
+```
 
 - 不再生成自己的 `sitemap.xml`
 - 继续生成 `llms.txt`、`robots.txt`、`feed.xml` 等 GEO 文件

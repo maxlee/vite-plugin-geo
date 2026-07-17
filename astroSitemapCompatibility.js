@@ -31,6 +31,12 @@ function hasPackage(manifest, packageName) {
   return dependencyGroups.some((dependencies) => Boolean(dependencies?.[packageName]));
 }
 
+export function isAstroProject(projectRoot) {
+  const packageJsonPath = join(projectRoot, 'package.json');
+  const manifest = existsSync(packageJsonPath) ? readJsonFile(packageJsonPath) : null;
+  return Boolean(manifest && hasPackage(manifest, 'astro'));
+}
+
 function findAstroConfigPath(projectRoot) {
   return ASTRO_CONFIG_FILES
     .map((fileName) => join(projectRoot, fileName))

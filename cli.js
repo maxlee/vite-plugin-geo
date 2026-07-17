@@ -294,6 +294,7 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
     lastmodStrategy,
     prettyUrls: options.prettyUrls !== false,
     sitemapIndex: options.sitemapIndex !== false,
+    sitemapMaxBytes: options.sitemapMaxBytes,
     hreflang: options.hreflang,
     llmsMdMirror: options.llmsMdMirror,
     llmsFull: options.llmsFull === true,

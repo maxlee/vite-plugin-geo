@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { normalizePath } from 'vite';
 import { setTimeout as sleep } from 'timers/promises';
 import {
+  isAstroProject,
   resolveAstroSitemapCompatibility,
   resolveGeneratedSitemapUrl,
 } from './astroSitemapCompatibility.js';
@@ -139,6 +140,7 @@ export function createGeoGeneratorPlugin(options = {}) {
   const bundleHtmlCandidates = new Set();
   let generatedInBundle = false;
   let generatedBundleFiles = [];
+  let astroUsageWarningShown = false;
   let pluginEnvironment = {
     viteVersion: 'unknown',
     rolldownVersion: null,
@@ -427,6 +429,7 @@ export function createGeoGeneratorPlugin(options = {}) {
           resolvedConfig?.root || process.cwd(),
           options,
         );
+        const astroProject = isAstroProject(resolvedConfig?.root || process.cwd());
 
         debug.log('Configuration:', {
           distDir,
@@ -438,7 +441,7 @@ export function createGeoGeneratorPlugin(options = {}) {
         });
 
         debug.time('HTML file discovery');
-        const diskHtmlFiles = generatedInBundle
+        const diskHtmlFiles = generatedInBundle || astroProject
           ? findHtmlFiles(distDir)
           : await waitForStableHtmlFiles(
             findHtmlFiles,
@@ -463,7 +466,14 @@ export function createGeoGeneratorPlugin(options = {}) {
         debug.log(`After deduplication: ${dedupedHtmlFiles.length} HTML files`);
 
         if (dedupedHtmlFiles.length === 0) {
-          console.warn('⚠️  No HTML files found in dist/ directory');
+          if (astroProject) {
+            if (!astroUsageWarningShown) {
+              console.warn("⚠️  Astro generates HTML after Vite finishes. Move this plugin from vite.plugins to integrations and import it from 'vite-plugin-geo/astro'.");
+              astroUsageWarningShown = true;
+            }
+          } else {
+            console.warn('⚠️  No HTML files found in dist/ directory');
+          }
           return;
         }
 

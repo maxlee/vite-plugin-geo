@@ -7,6 +7,7 @@ import {
   resolveSiteMetadataFromBuildOutput,
 } from './geoMetadataResolver.js';
 import { extractPageMetadata } from './geoGenerator.js';
+import { createGeoGeneratorPlugin } from './viteGeoGeneratorPlugin.js';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__vite-geo-plugin-fixture__');
 const pluginSourcePath = existsSync(join(process.cwd(), 'viteGeoGeneratorPlugin.js'))
@@ -15,6 +16,7 @@ const pluginSourcePath = existsSync(join(process.cwd(), 'viteGeoGeneratorPlugin.
 const pluginManifestPath = existsSync(join(process.cwd(), 'packages/vite-plugin-geo', 'package.json'))
   ? join(process.cwd(), 'packages/vite-plugin-geo', 'package.json')
   : join(process.cwd(), 'package.json');
+const pluginSourceUrl = pathToFileURL(pluginSourcePath).href;
 
 function ensureDir(path) {
   mkdirSync(path, { recursive: true });
@@ -39,7 +41,7 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
       [
         '--input-type=module',
         '-e',
-        "import('./packages/vite-plugin-geo/viteGeoGeneratorPlugin.js').then((module) => console.log(module.resolvePluginVersion()))",
+        `import(${JSON.stringify(pluginSourceUrl)}).then((module) => console.log(module.resolvePluginVersion()))`,
       ],
       {
         cwd: process.cwd(),
@@ -57,7 +59,7 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
       [
         '--input-type=module',
         '-e',
-        "import('./packages/vite-plugin-geo/viteGeoGeneratorPlugin.js').then(({ createGeoGeneratorPlugin }) => { const logs = []; const originalLog = console.log; console.log = (...args) => logs.push(args.join(' ')); try { createGeoGeneratorPlugin(); } finally { console.log = originalLog; } process.stdout.write(JSON.stringify(logs)); })",
+        `import(${JSON.stringify(pluginSourceUrl)}).then(({ createGeoGeneratorPlugin }) => { const logs = []; const originalLog = console.log; console.log = (...args) => logs.push(args.join(' ')); try { createGeoGeneratorPlugin(); } finally { console.log = originalLog; } process.stdout.write(JSON.stringify(logs)); })`,
       ],
       {
         cwd: process.cwd(),
@@ -76,7 +78,7 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
       [
         '--input-type=module',
         '-e',
-        "import('./packages/vite-plugin-geo/viteGeoGeneratorPlugin.js').then(({ createGeoGeneratorPlugin }) => { const logs = []; const originalLog = console.log; console.log = (...args) => logs.push(args.join(' ')); try { createGeoGeneratorPlugin({ debug: true }); } finally { console.log = originalLog; } process.stdout.write(JSON.stringify(logs)); })",
+        `import(${JSON.stringify(pluginSourceUrl)}).then(({ createGeoGeneratorPlugin }) => { const logs = []; const originalLog = console.log; console.log = (...args) => logs.push(args.join(' ')); try { createGeoGeneratorPlugin({ debug: true }); } finally { console.log = originalLog; } process.stdout.write(JSON.stringify(logs)); })`,
       ],
       {
         cwd: process.cwd(),
@@ -99,7 +101,7 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
         '--input-type=module',
         '-e',
         `
-          import { createGeoGeneratorPlugin } from './packages/vite-plugin-geo/viteGeoGeneratorPlugin.js';
+          import { createGeoGeneratorPlugin } from ${JSON.stringify(pluginSourceUrl)};
           const logs = [];
           const originalLog = console.log;
           console.log = (...args) => logs.push(args.join(' '));
@@ -454,6 +456,37 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     expect(pluginSource).toContain('resolveLastmodSourcePath');
     expect(pluginSource).toContain('const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, seoOptions);');
     expect(pluginSource).toContain("'sourceHtmlDir'");
+  });
+
+  it('prints one actionable warning when the Vite entry is used inside Astro', async () => {
+    ensureDir(join(fixtureRoot, 'dist'));
+    writeFixtureFile('package.json', JSON.stringify({
+      dependencies: { astro: '^7.1.0' },
+    }));
+
+    const plugin = createGeoGeneratorPlugin({
+      domain: 'https://example.com',
+      stabilityWaitMs: 0,
+    });
+    plugin.configResolved({
+      root: fixtureRoot,
+      base: '',
+      build: { outDir: 'dist' },
+    });
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      await plugin.closeBundle.handler();
+      await plugin.closeBundle.handler();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(warnings).toEqual([
+      expect.stringContaining("vite-plugin-geo/astro"),
+    ]);
   });
 });
 
