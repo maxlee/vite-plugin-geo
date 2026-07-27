@@ -2,7 +2,7 @@
 
 一个强大的 Vite 构建后插件，自动生成 GEO / SEO / AI 友好文件，让你的网站对搜索引擎、LLM 和用户都更友好。
 
-当前版本：`vite-plugin-geo@0.1.1`。支持 Vite 5 / 6 / 7 / 8；在 Vite 8 中会检测 Rolldown 环境，并优先通过 `generateBundle` 输出新增静态文件。Astro 项目请使用专用的 `vite-plugin-geo/astro` 入口。
+当前版本：`vite-plugin-geo@0.1.1`。支持 Vite 5 / 6 / 7 / 8；在 Vite 8 中会检测 Rolldown 环境，并优先通过 `generateBundle` 输出新增静态文件。Astro 项目正式支持两种方式：使用专用的 `vite-plugin-geo/astro` 原生集成，或在构建后串联 `astro build && vite-plugin-geo generate`。
 
 ## ✨ 核心特性
 
@@ -51,6 +51,8 @@ export default defineConfig({
 
 ### Astro 项目
 
+#### 方式一：Astro 原生集成
+
 Astro 在内部 Vite 构建结束后才生成最终 HTML，因此不要把默认入口放进 `vite.plugins`。请使用 Astro 专用入口，并放进 `integrations`：
 
 ```js
@@ -67,6 +69,33 @@ export default defineConfig({
 Astro 集成会在静态页面全部生成后创建 GEO 文件。域名读取顺序为 `geo({ domain })`、Astro `site`、`package.json` 的 `domain`；通常已经配置 `site` 时无需重复填写 `domain`。
 
 如果仍然在 `vite.plugins` 中使用默认入口，构建只会显示一次迁移提示，不会继续无效等待 `dist/` 中尚未生成的 HTML。
+
+#### 方式二：构建后串联 CLI
+
+也可以在 Astro 构建完成后运行 `generate`，让 CLI 扫描最终生成的 HTML：
+
+```json
+{
+  "domain": "https://example.com",
+  "scripts": {
+    "build": "astro build && vite-plugin-geo generate"
+  }
+}
+```
+
+`generate` 默认读取 `dist/`，并从 `package.json` 的 `domain` 字段获取站点域名。如果域名只配置在 `astro.config.mjs` 的 `site` 中，CLI 不会读取它，需要在构建命令中明确传入：
+
+```json
+{
+  "scripts": {
+    "build": "astro build && vite-plugin-geo generate --domain https://example.com"
+  }
+}
+```
+
+如果修改了 Astro 的输出目录，请追加 `--dist-dir <path>`，让 CLI 读取对应目录。
+
+原生集成和构建后 CLI 串联二选一，不要同时配置，以免重复生成 GEO 文件。
 
 构建完成后，`dist/` 目录下会自动生成：
 
@@ -194,6 +223,8 @@ vite-plugin-geo generate \
 # 使用配置文件
 vite-plugin-geo generate --config ./geo.config.json
 ```
+
+Astro 构建串联请参阅上方“[Astro 项目](#astro-项目)”中的“方式二：构建后串联 CLI”。
 
 <details>
 <summary>📖 CLI 详细说明</summary>
