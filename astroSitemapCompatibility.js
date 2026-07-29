@@ -1,16 +1,7 @@
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
-
-const ASTRO_CONFIG_FILES = [
-  'astro.config.mjs',
-  'astro.config.js',
-  'astro.config.ts',
-  'astro.config.mts',
-  'astro.config.cts',
-];
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { join, resolve } from 'path';
 
 const DEFAULT_GEO_SITEMAP_URL = 'sitemap.xml';
-const DEFAULT_ASTRO_SITEMAP_FILENAME_BASE = 'sitemap';
 
 function readJsonFile(filePath) {
   try {
@@ -21,14 +12,12 @@ function readJsonFile(filePath) {
 }
 
 function hasPackage(manifest, packageName) {
-  const dependencyGroups = [
+  return [
     manifest?.dependencies,
     manifest?.devDependencies,
     manifest?.peerDependencies,
     manifest?.optionalDependencies,
-  ];
-
-  return dependencyGroups.some((dependencies) => Boolean(dependencies?.[packageName]));
+  ].some((dependencies) => Boolean(dependencies?.[packageName]));
 }
 
 export function isAstroProject(projectRoot) {
@@ -37,106 +26,42 @@ export function isAstroProject(projectRoot) {
   return Boolean(manifest && hasPackage(manifest, 'astro'));
 }
 
-function findAstroConfigPath(projectRoot) {
-  return ASTRO_CONFIG_FILES
-    .map((fileName) => join(projectRoot, fileName))
-    .find((filePath) => existsSync(filePath));
+function findGeneratedSitemap(distDir) {
+  if (!existsSync(distDir)) return null;
+  const candidates = readdirSync(distDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.xml'))
+    .map((entry) => {
+      const content = readFileSync(join(distDir, entry.name), 'utf-8');
+      return {
+        filename: entry.name,
+        isIndex: /<sitemapindex\b/i.test(content),
+        isSitemap: /<(?:sitemapindex|urlset)\b/i.test(content),
+      };
+    })
+    .filter(({ isSitemap }) => isSitemap)
+    .sort((a, b) => {
+      if (a.isIndex !== b.isIndex) return a.isIndex ? -1 : 1;
+      return a.filename.localeCompare(b.filename);
+    });
+  return candidates[0]?.filename || null;
 }
 
-function readAstroConfig(projectRoot) {
-  const configPath = findAstroConfigPath(projectRoot);
-  if (!configPath) {
-    return { configPath: null, content: '' };
-  }
-
-  try {
-    return {
-      configPath,
-      content: readFileSync(configPath, 'utf-8'),
-    };
-  } catch {
-    return { configPath: null, content: '' };
-  }
-}
-
-function extractImportedSitemapIdentifier(configContent) {
-  const defaultImportMatch = configContent.match(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]@astrojs\/sitemap['"]/);
-  if (defaultImportMatch) {
-    return defaultImportMatch[1];
-  }
-
-  const requireMatch = configContent.match(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]@astrojs\/sitemap['"]\s*\)/);
-  if (requireMatch) {
-    return requireMatch[1];
-  }
-
-  return null;
-}
-
-function configUsesAstroSitemap(configContent) {
-  const importedIdentifier = extractImportedSitemapIdentifier(configContent);
-
-  if (importedIdentifier) {
-    const callPattern = new RegExp(`\\b${importedIdentifier}\\s*\\(`);
-    return callPattern.test(configContent);
-  }
-
-  return /import\s*\(\s*['"]@astrojs\/sitemap['"]\s*\)/.test(configContent);
-}
-
-function extractStaticFilenameBase(configContent) {
-  const filenameBaseMatch = configContent.match(/filenameBase\s*:\s*(['"`])([^'"`]+)\1/);
-  if (!filenameBaseMatch) {
-    return DEFAULT_ASTRO_SITEMAP_FILENAME_BASE;
-  }
-
-  return filenameBaseMatch[2].trim() || DEFAULT_ASTRO_SITEMAP_FILENAME_BASE;
-}
-
-function normalizeSitemapUrl(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmedValue = value.trim();
-  return trimmedValue || null;
-}
-
-/**
- * Resolve whether vite-plugin-geo should coexist with Astro's official sitemap integration.
- * This function only performs static reads and never executes user config files.
- *
- * @param {string} projectRoot - Project root directory
- * @param {object} [options={}] - User options
- * @param {boolean} [options.generateSitemap] - Explicit sitemap generation override
- * @param {string} [options.sitemapUrl] - Explicit public sitemap URL/path override
- * @returns {{detected: boolean, shouldGenerateSitemap: boolean, sitemapUrl: string, sitemapUrlExplicit: boolean, filenameBase: string|null, configPath: string|null}}
- */
-export function resolveAstroSitemapCompatibility(projectRoot, options = {}) {
-  const packageJsonPath = join(projectRoot, 'package.json');
-  const manifest = existsSync(packageJsonPath) ? readJsonFile(packageJsonPath) : null;
-  const { configPath, content } = readAstroConfig(projectRoot);
-  const hasAstroProject = Boolean(manifest && hasPackage(manifest, 'astro'));
-  const hasAstroSitemapPackage = Boolean(manifest && hasPackage(manifest, '@astrojs/sitemap'));
-  const hasConfiguredAstroSitemap = Boolean(content && configUsesAstroSitemap(content));
-  const detected = hasAstroProject && hasAstroSitemapPackage && hasConfiguredAstroSitemap;
-  const filenameBase = detected ? extractStaticFilenameBase(content) : null;
-  const detectedSitemapUrl = detected
-    ? `${filenameBase}-index.xml`
-    : DEFAULT_GEO_SITEMAP_URL;
-  const explicitSitemapUrl = normalizeSitemapUrl(options.sitemapUrl);
-  const sitemapUrlExplicit = explicitSitemapUrl !== null;
-  const shouldGenerateSitemap = typeof options.generateSitemap === 'boolean'
-    ? options.generateSitemap
-    : !detected;
-
+export function resolveAstroSitemapCompatibility(projectRoot, options = {}, distDir) {
+  const resolvedDistDir = distDir || resolve(projectRoot, options.distDir || 'dist');
+  const detectedSitemapUrl = findGeneratedSitemap(resolvedDistDir);
+  const explicitSitemapUrl = typeof options.sitemapUrl === 'string' && options.sitemapUrl.trim()
+    ? options.sitemapUrl.trim()
+    : null;
+  const detected = Boolean(detectedSitemapUrl);
   return {
     detected,
-    shouldGenerateSitemap,
-    sitemapUrl: explicitSitemapUrl || detectedSitemapUrl,
-    sitemapUrlExplicit,
-    filenameBase,
-    configPath,
+    shouldGenerateSitemap: typeof options.generateSitemap === 'boolean'
+      ? options.generateSitemap
+      : !detected,
+    sitemapUrl: explicitSitemapUrl || detectedSitemapUrl || DEFAULT_GEO_SITEMAP_URL,
+    sitemapUrlExplicit: Boolean(explicitSitemapUrl),
+    filenameBase: null,
+    configPath: null,
   };
 }
 
@@ -144,11 +69,6 @@ export function resolveGeneratedSitemapUrl(sitemapFiles, fallback = DEFAULT_GEO_
   if (!Array.isArray(sitemapFiles) || sitemapFiles.length === 0) {
     return fallback;
   }
-
   const sitemapIndexFile = sitemapFiles.find(({ filename }) => filename === 'sitemap_index.xml');
-  if (sitemapIndexFile) {
-    return sitemapIndexFile.filename;
-  }
-
-  return sitemapFiles[0]?.filename || fallback;
+  return sitemapIndexFile?.filename || sitemapFiles[0]?.filename || fallback;
 }

@@ -2,16 +2,17 @@
 
 一个强大的 Vite 构建后插件，自动生成 GEO / SEO / AI 友好文件，让你的网站对搜索引擎、LLM 和用户都更友好。
 
-当前版本：`vite-plugin-geo@0.1.1`。支持 Vite 5 / 6 / 7 / 8；在 Vite 8 中会检测 Rolldown 环境，并优先通过 `generateBundle` 输出新增静态文件。Astro 项目正式支持两种方式：使用专用的 `vite-plugin-geo/astro` 原生集成，或在构建后串联 `astro build && vite-plugin-geo generate`。
+当前版本：`vite-plugin-geo@0.1.2`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Vite 插件只在最终资源阶段生成文件；Astro 项目正式支持两种方式：使用专用的 `vite-plugin-geo/astro` 原生集成，或在构建后串联 `astro build && vite-plugin-geo generate`。
 
 ## ✨ 核心特性
 
 - 🗺️ **sitemap.xml** — 自动生成搜索引擎索引，支持超过 50,000 URL 自动拆分；Astro 官方 sitemap 会自动兼容
 - 🤖 **robots.txt** — 灵活的爬虫策略配置
-- 📰 **feed.xml** — RSS/Atom 订阅源，自动注入 link 标签到所有 HTML
+- 📰 **feed.xml** — RSS 2.0 订阅源，自动注入 discovery link 到所有 HTML
 - 📝 **llms.txt** — 为 LLM 提供结构化内容入口
 - 📄 **Markdown 镜像** — 每个 HTML 页面自动生成 `.md` 版本
 - 🌐 **多语言支持** — hreflang 多语言站点映射
+- 🛍️ **sku.md** — 可选的实验性商品目录发现清单，默认关闭
 - ⚡ **零配置开箱** — 合理的默认值，无需繁琐配置
 
 ## 📦 安装
@@ -114,13 +115,14 @@ dist/
 |------|------|------|
 | `sitemap.xml` | ✅ | 搜索引擎索引 |
 | `robots.txt` | ✅ | 爬虫策略 |
-| `feed.xml` | ✅ | RSS 订阅 + 自动注入 RSS/Atom link 标签 |
+| `feed.xml` | ✅ | RSS 2.0 订阅 + 自动注入 discovery link |
 | `llms.txt` | ✅ | LLM 内容入口 |
 | `*.html.md` | ✅ | 页面 Markdown 镜像 |
 | `llms-full.md` | ❌ | 全站 Markdown 聚合 |
 | `llms-ctx.txt` | ❌ | 不含 Optional 的 LLM 扩展上下文 |
 | `llms-ctx-full.txt` | ❌ | 含 Optional 的 LLM 扩展上下文 |
 | `humans.txt` | ❌ | 团队/技术信息 |
+| `sku.md` | ❌ | 实验性 SKU.md `manifest-basic` 根清单 |
 | `sitemap_index.xml` | 🔀 | URL 超过 50,000 时自动生成 |
 
 ## ⚙️ 配置项
@@ -144,9 +146,10 @@ dist/
 | `llmsSections` | `object` | 自动 | 按路径片段自定义 llms.txt 分区 |
 | `generateFeed` | `boolean` | `true` | RSS 订阅 |
 | `generateHumans` | `boolean` | `false` | humans.txt |
+| `skuMd` | `object` | — | 开启实验性 SKU.md 根清单 |
 | `debug` | `boolean` | `false` | 调试日志 |
 
-`distDir` 和三个 `stability*` 选项只用于普通 Vite 插件。Astro 集成始终使用 Astro 提供的最终输出目录，不需要等待配置。
+`stabilityWaitMs`、`stabilityPollIntervalMs`、`stabilityRounds` 在 `0.1.2` 中仍可传入，但已经弃用且不再生效。Vite 不再轮询输出目录；Astro 集成始终使用 Astro 提供的最终输出目录。
 
 <details>
 <summary>📋 查看完整配置项</summary>
@@ -155,9 +158,9 @@ dist/
 |------|------|--------|------|
 | `stripPathPrefixes` | `string[]` | `['src/pages/']` | URL 剥离前缀 |
 | `sourceHtmlDir` | `string` | `'src/pages'` | 源码 HTML 目录 |
-| `stabilityWaitMs` | `number` | `1500` | 文件稳定等待 |
-| `stabilityPollIntervalMs` | `number` | `100` | 轮询间隔 |
-| `stabilityRounds` | `number` | `2` | 稳定轮次 |
+| `stabilityWaitMs` | `number` | — | 已弃用，仅兼容旧配置 |
+| `stabilityPollIntervalMs` | `number` | — | 已弃用，仅兼容旧配置 |
+| `stabilityRounds` | `number` | — | 已弃用，仅兼容旧配置 |
 | `packageJsonPath` | `string \| false` | `'./package.json'` | 读取 `domain` 和团队信息 |
 | `sitemapIndex` | `boolean` | `true` | 自动拆分 sitemap |
 | `sitemapMaxBytes` | `number` | `52428800` | 单个 sitemap 未压缩大小上限 |
@@ -168,7 +171,7 @@ dist/
 
 ## Astro 官方 Sitemap 兼容
 
-如果 Astro 项目已经使用 `@astrojs/sitemap`，继续把两项集成都放在 `integrations` 中即可。`vite-plugin-geo` 会自动检测标准的 Astro sitemap 用法，并做三件事：
+如果 Astro 项目已经使用 `@astrojs/sitemap`，两项集成都放在 `integrations`，并确保 `sitemap()` 排在 `geo()` 前。`vite-plugin-geo` 不会分析配置源码，而是在自己的构建结束钩子中检查真实 Sitemap 产物：
 
 ```js
 import sitemap from '@astrojs/sitemap';
@@ -182,17 +185,7 @@ export default defineConfig({
 
 - 不再生成自己的 `sitemap.xml`
 - 继续生成 `llms.txt`、`robots.txt`、`feed.xml` 等 GEO 文件
-- 自动让 `robots.txt` 和 `llms.txt` 指向 Astro 官方入口 `sitemap-index.xml`
-
-如果 Astro 配置中写了静态 `filenameBase`，例如：
-
-```js
-sitemap({
-  filenameBase: 'site-map',
-})
-```
-
-插件会自动引用 `site-map-index.xml`。
+- 自动让 `robots.txt` 和 `llms.txt` 指向实际发现的 Sitemap 文件，包括自定义 `filenameBase`
 
 需要手动覆盖时，可以使用：
 
@@ -277,17 +270,21 @@ node packages/vite-plugin-geo/cli.js generate
 | `prettyUrls: false` | `about.html` | `/about.html` |
 | 首页 | `index.html` | `/` (始终) |
 
-### 📰 RSS/Atom Link 注入
+### 📰 RSS Link 注入
 
-- 自动检测 feed 格式（RSS 2.0 / Atom）
-- 根据格式注入正确的 MIME 类型
-- 已存在的 link 标签会自动替换
+- 固定生成 RSS 2.0，并注入 `application/rss+xml`
+- 已存在的 RSS 或 Atom discovery link 会按属性语义识别并替换，不依赖属性顺序
+- 重复执行不会插入多个订阅链接
 
 ### 🕐 时间来源
 
 默认优先级：源码 HTML mtime → dist HTML mtime → 构建时间。
 
 如果使用 `lastmodStrategy: 'git'`，插件会先读取对应文件的最新 Git 提交时间；如果当前目录不是 Git 仓库，或文件没有提交记录，会自动回到文件修改时间。
+
+### 🤖 robots 与 noindex 边界
+
+`robots.txt` 是抓取提示，不是访问控制。自定义指令含控制字符时构建会失败。页面过滤只读取最终 HTML 中的 robots meta `noindex`；部署服务器后来添加的 `X-Robots-Tag` 无法在构建期识别。`blockGoogleExtended` 只控制 Google-Extended，不影响 Google Search 收录或排名。
 
 ### 🧠 llms.txt 结构
 
@@ -298,6 +295,8 @@ node packages/vite-plugin-geo/cli.js generate
 - 页面链接按 `Docs`、`Examples`、`API` 自动分区
 - `Optional` 分区放 sitemap 和 robots.txt 等可跳过链接
 - 默认链接到 `.html.md` Markdown mirror，便于 LLM 读取
+
+`llms.txt` 目前是社区提案，不是正式 Web 标准。`llms-ctx.txt`、`llms-ctx-full.txt` 和 `llms-full.md` 是本插件的扩展输出。
 
 需要自定义分区时：
 
@@ -333,9 +332,43 @@ geo({
   hreflang: {
     en: 'https://example.com/{path}',
     'zh-CN': 'https://example.com/zh/{path}',
+    'zh-Hans': 'https://example.com/zh-hans/{path}',
+    'x-default': 'https://example.com/{path}',
   },
 })
 ```
+
+### 实验性 SKU.md 商品目录清单
+
+```js
+geo({
+  domain: 'https://shop.example.com',
+  skuMd: {
+    merchantName: 'Example Store',
+    catalogUrl: 'https://shop.example.com/collections/all',
+    contentLanguage: 'zh-CN',
+    market: 'CN',
+  },
+})
+```
+
+该功能固定生成 `sku.md/1.8-draft` 的 `manifest-basic`，只声明同源 HTTPS 商品目录入口，不联网检查目录，不生成商品文档，也不声明实时价格、库存、交易或结账能力。它是实验性社区提案，不能替代 Product JSON-LD、UCP、ACP 或店铺实时接口。
+
+SKU.md 规范要求文件位于域名根路径 `/sku.md`，因此配置非根 `routeBasePath` 或 Vite `base` 时会直接失败。部署后还需检查：
+
+- `/sku.md` 返回 HTTP 200；
+- `Content-Type` 为 `text/markdown; charset=utf-8`；
+- 缓存头符合店铺更新频率；
+- `catalogUrl` 在公网真实可访问。
+
+实现依据：[SKU.md v1.8 草案](https://sku.md)。截至本版本评审时，该规范仍是实验性提案，不应描述为已被主流平台采用。
+
+## 0.1.2 兼容性说明
+
+- 移除 Vite 5 / 6 支持，支持范围改为 Vite 7 / 8。
+- Node.js 最低要求改为 `^20.19.0 || >=22.12.0`；Astro 7 另要求 Node.js 22.12+。
+- 任一已启用输出生成或校验失败时，Vite、Astro 和 CLI 都会让整个构建失败，不再保留“部分成功”结果。
+- 公开配置名、默认开关和现有输出文件名保持不变；三个 `stability*` 选项仅保留为弃用占位。
 
 ### 完整功能
 

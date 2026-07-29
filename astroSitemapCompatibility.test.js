@@ -8,35 +8,21 @@ import {
 
 describe('Astro sitemap compatibility detection', () => {
   const fixtureRoot = join(process.cwd(), 'tempfiles', '__astro-sitemap-compatibility__');
+  const distDir = join(fixtureRoot, 'dist');
 
   beforeEach(() => {
-    mkdirSync(fixtureRoot, { recursive: true });
+    mkdirSync(distDir, { recursive: true });
   });
 
   afterEach(() => {
     rmSync(fixtureRoot, { recursive: true, force: true });
   });
 
-  function writePackageJson(manifest) {
-    writeFileSync(join(fixtureRoot, 'package.json'), JSON.stringify(manifest, null, 2));
-  }
-
-  it('detects standard Astro sitemap usage and points to sitemap-index.xml', () => {
-    writePackageJson({
-      dependencies: {
-        astro: '^6.0.0',
-        '@astrojs/sitemap': '^3.7.3',
-      },
-    });
-    writeFileSync(join(fixtureRoot, 'astro.config.mjs'), `
-      import { defineConfig } from 'astro/config';
-      import sitemap from '@astrojs/sitemap';
-
-      export default defineConfig({
-        site: 'https://example.com',
-        integrations: [sitemap()],
-      });
-    `);
+  it('detects a sitemap index from the final build output', () => {
+    writeFileSync(
+      join(distDir, 'sitemap-index.xml'),
+      '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></sitemapindex>',
+    );
 
     const result = resolveAstroSitemapCompatibility(fixtureRoot);
 
@@ -45,24 +31,11 @@ describe('Astro sitemap compatibility detection', () => {
     expect(result.shouldGenerateSitemap).toBe(false);
   });
 
-  it('uses a static Astro filenameBase when one is configured', () => {
-    writePackageJson({
-      devDependencies: {
-        astro: '^6.0.0',
-        '@astrojs/sitemap': '^3.7.3',
-      },
-    });
-    writeFileSync(join(fixtureRoot, 'astro.config.ts'), `
-      import sitemap from '@astrojs/sitemap';
-
-      export default {
-        integrations: [
-          sitemap({
-            filenameBase: 'site-map',
-          }),
-        ],
-      };
-    `);
+  it('uses the actual custom filename found in the final output', () => {
+    writeFileSync(
+      join(distDir, 'site-map-index.xml'),
+      '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></sitemapindex>',
+    );
 
     const result = resolveAstroSitemapCompatibility(fixtureRoot);
 
@@ -71,18 +44,10 @@ describe('Astro sitemap compatibility detection', () => {
     expect(result.shouldGenerateSitemap).toBe(false);
   });
 
-  it('does not detect Astro sitemap when the package is installed but not configured', () => {
-    writePackageJson({
-      dependencies: {
-        astro: '^6.0.0',
-        '@astrojs/sitemap': '^3.7.3',
-      },
-    });
+  it('does not inspect Astro config source', () => {
     writeFileSync(join(fixtureRoot, 'astro.config.mjs'), `
-      export default {
-        site: 'https://example.com',
-        integrations: [],
-      };
+      import sitemap from '@astrojs/sitemap';
+      export default { integrations: [sitemap()] };
     `);
 
     const result = resolveAstroSitemapCompatibility(fixtureRoot);
@@ -92,17 +57,11 @@ describe('Astro sitemap compatibility detection', () => {
     expect(result.shouldGenerateSitemap).toBe(true);
   });
 
-  it('lets explicit options override automatic Astro detection', () => {
-    writePackageJson({
-      dependencies: {
-        astro: '^6.0.0',
-        '@astrojs/sitemap': '^3.7.3',
-      },
-    });
-    writeFileSync(join(fixtureRoot, 'astro.config.mjs'), `
-      import sitemap from '@astrojs/sitemap';
-      export default { integrations: [sitemap()] };
-    `);
+  it('lets explicit options override output detection', () => {
+    writeFileSync(
+      join(distDir, 'sitemap-index.xml'),
+      '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></sitemapindex>',
+    );
 
     const result = resolveAstroSitemapCompatibility(fixtureRoot, {
       generateSitemap: true,
@@ -114,16 +73,10 @@ describe('Astro sitemap compatibility detection', () => {
     expect(result.shouldGenerateSitemap).toBe(true);
   });
 
-  it('falls back to default behavior when no Astro config exists', () => {
-    writePackageJson({
-      dependencies: {
-        vite: '^7.0.0',
-      },
-    });
-
+  it('falls back to default behavior when no sitemap output exists', () => {
     const result = resolveAstroSitemapCompatibility(fixtureRoot);
 
-    expect(existsSync(join(fixtureRoot, 'astro.config.mjs'))).toBe(false);
+    expect(existsSync(join(distDir, 'sitemap.xml'))).toBe(false);
     expect(result.detected).toBe(false);
     expect(result.sitemapUrl).toBe('sitemap.xml');
     expect(result.shouldGenerateSitemap).toBe(true);
@@ -132,20 +85,16 @@ describe('Astro sitemap compatibility detection', () => {
 
 describe('generated sitemap URL resolution', () => {
   it('points references at the generated sitemap index when one exists', () => {
-    const result = resolveGeneratedSitemapUrl([
+    expect(resolveGeneratedSitemapUrl([
       { filename: 'sitemap_1.xml', content: '' },
       { filename: 'sitemap_2.xml', content: '' },
       { filename: 'sitemap_index.xml', content: '' },
-    ]);
-
-    expect(result).toBe('sitemap_index.xml');
+    ])).toBe('sitemap_index.xml');
   });
 
   it('points references at the single generated sitemap when no index exists', () => {
-    const result = resolveGeneratedSitemapUrl([
+    expect(resolveGeneratedSitemapUrl([
       { filename: 'sitemap.xml', content: '' },
-    ]);
-
-    expect(result).toBe('sitemap.xml');
+    ])).toBe('sitemap.xml');
   });
 });

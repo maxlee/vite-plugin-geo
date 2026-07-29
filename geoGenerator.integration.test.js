@@ -136,7 +136,7 @@ describe('Integration Tests - Core Functionality Workflow', () => {
     expect(llmsTxtContent).toContain('[Home Page](https://example.com)');
     expect(llmsTxtContent).toContain('[Documentation](https://example.com/docs)');
     expect(llmsTxtContent).toContain('[About Us](https://example.com/about)');
-    expect(llmsTxtContent).toContain('Key Features:'); // Plain paragraph, not heading
+    expect(llmsTxtContent).not.toMatch(/Shopify|SHOPLINE|NDJSON|Key Features:/i);
     expect(llmsTxtContent).toContain('## Optional');
     expect(llmsTxtContent).toContain('[Sitemap](https://example.com/sitemap.xml)');
     expect(llmsTxtContent).toContain('[robots.txt](https://example.com/robots.txt)');

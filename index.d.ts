@@ -12,14 +12,24 @@ export interface LlmsPageInfo {
   isHome: boolean;
 }
 
+export interface SkuMdOptions {
+  merchantName: string;
+  catalogUrl: string;
+  contentLanguage?: string;
+  market?: string;
+}
+
 export interface GeoGeneratorOptions {
   domain?: string;
   distDir?: string;
   routeBasePath?: string;
   stripPathPrefixes?: string[];
   sourceHtmlDir?: string;
+  /** @deprecated Accepted for compatibility; Vite generation no longer polls the output directory. */
   stabilityWaitMs?: number;
+  /** @deprecated Accepted for compatibility; Vite generation no longer polls the output directory. */
   stabilityPollIntervalMs?: number;
+  /** @deprecated Accepted for compatibility; Vite generation no longer polls the output directory. */
   stabilityRounds?: number;
   packageJsonPath?: string | false;
   prettyUrls?: boolean;
@@ -40,6 +50,7 @@ export interface GeoGeneratorOptions {
   generateHumans?: boolean;
   blockGoogleExtended?: boolean;
   robotsDirectives?: string[];
+  skuMd?: SkuMdOptions;
   debug?: boolean;
 }
 

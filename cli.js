@@ -1,37 +1,12 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
-import { isAbsolute, relative, resolve } from 'path';
+import { readFileSync, realpathSync } from 'fs';
+import { isAbsolute, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  composePageUrl,
-  dedupeHtmlFilesByPagePath,
-  detectFeedFormat,
-  extractLastmod,
-  extractPageMetadata,
-  filterHtmlFiles,
-  findHtmlFiles,
-  generateFeedXml,
-  generateLlmsContextTxt,
-  generateHumansTxt,
-  generateLlmsFullMd,
-  generateLlmsTxt,
-  generateMarkdownMirrors,
-  generateRobotsTxt,
-  generateSitemap,
-  normalizeFilePath,
-  resolveLastmodSourcePath,
-  resolvePagePath,
-} from './geoGenerator.js';
-import {
-  extractTeamInfoFromPackageJson,
-  extractTechStackFromPackageJson,
-  resolveSiteMetadataFromBuildOutput,
-} from './geoMetadataResolver.js';
-import {
-  resolveAstroSitemapCompatibility,
-  resolveGeneratedSitemapUrl,
-} from './astroSitemapCompatibility.js';
+  applyGeoGenerationPlanToDisk,
+  buildGeoGenerationPlanFromDisk,
+} from './geoBuildPipeline.js';
 
 const USAGE = `
 Usage:
@@ -239,260 +214,41 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
   delete options.config;
 
   const distDir = resolvePathFromCwd(cwd, options.distDir || 'dist');
-  const routeBasePath = typeof options.routeBasePath === 'string' ? options.routeBasePath : '';
-  const sourceHtmlDir = resolvePathFromCwd(cwd, options.sourceHtmlDir || 'src/pages');
-  const packageJsonPath = options.packageJsonPath === false
-    ? false
-    : resolvePathFromCwd(cwd, options.packageJsonPath || './package.json');
-  const stripPathPrefixes = Array.isArray(options.stripPathPrefixes)
-    ? options.stripPathPrefixes
-    : ['src/pages/'];
-  const lastmodStrategy = options.lastmodStrategy || 'file-mtime';
-  const sitemapCompatibility = resolveAstroSitemapCompatibility(cwd, options);
-
-  if (!['file-mtime', 'build', 'git'].includes(lastmodStrategy)) {
-    throw new Error(`Invalid lastmodStrategy: ${lastmodStrategy}`);
-  }
-
-  if (!existsSync(distDir)) {
-    throw new Error(`Dist directory not found: ${distDir}`);
-  }
-
-  const allHtmlFiles = findHtmlFiles(distDir);
-  const dedupedHtmlFiles = dedupeHtmlFilesByPagePath(allHtmlFiles, distDir, {
-    stripPathPrefixes,
+  const plan = await buildGeoGenerationPlanFromDisk({
+    projectRoot: cwd,
+    distDir,
+    options: {
+      ...options,
+      sourceHtmlDir: options.sourceHtmlDir
+        ? resolvePathFromCwd(cwd, options.sourceHtmlDir)
+        : undefined,
+      packageJsonPath: options.packageJsonPath === false
+        ? false
+        : resolvePathFromCwd(cwd, options.packageJsonPath || './package.json'),
+    },
   });
 
-  if (dedupedHtmlFiles.length === 0) {
+  if (plan.report.totalHtmlFiles === 0) {
     logger.warn('⚠️  No HTML files found in dist directory');
     return { generatedFiles: [] };
   }
-
-  const filterResult = await filterHtmlFiles(dedupedHtmlFiles, {
-    excludePatterns: options.excludePatterns,
-    distDir,
-  });
-  const htmlFiles = filterResult.included;
-
-  if (htmlFiles.length === 0) {
+  if (plan.report.includedHtmlFiles === 0) {
     logger.warn('⚠️  All HTML files were excluded by filters');
     return { generatedFiles: [] };
   }
 
-  const siteMetadata = resolveSiteMetadataFromBuildOutput(distDir, {
-    domain: options.domain,
-    packageJsonPath,
-    htmlFiles,
-    stripPathPrefixes,
-  });
-
-  const currentDate = new Date().toISOString();
-  const seoOptions = {
-    routeBasePath,
-    stripPathPrefixes,
-    sourceHtmlDir,
-    lastmodStrategy,
-    prettyUrls: options.prettyUrls !== false,
-    sitemapIndex: options.sitemapIndex !== false,
-    sitemapMaxBytes: options.sitemapMaxBytes,
-    hreflang: options.hreflang,
-    llmsMdMirror: options.llmsMdMirror,
-    llmsFull: options.llmsFull === true,
-    llmsClassify: options.llmsClassify,
-    llmsSections: options.llmsSections,
-    sitemapUrl: sitemapCompatibility.sitemapUrl,
-  };
-
-  const generatedFiles = [];
-
-  if (sitemapCompatibility.shouldGenerateSitemap) {
-    const sitemapFiles = generateSitemap(
-      siteMetadata.url,
-      htmlFiles,
-      distDir,
-      currentDate,
-      seoOptions,
-    );
-
-    if (!sitemapCompatibility.sitemapUrlExplicit) {
-      seoOptions.sitemapUrl = resolveGeneratedSitemapUrl(sitemapFiles);
-    }
-
-    sitemapFiles.forEach(({ filename, content }) => {
-      const filePath = resolve(distDir, filename);
-      writeFileSync(filePath, content, 'utf-8');
-      generatedFiles.push(filename);
-      logger.log(`✅ Generated ${filename}`);
-    });
-  } else if (sitemapCompatibility.detected) {
-    logger.log(`ℹ️  Detected @astrojs/sitemap; using ${seoOptions.sitemapUrl}`);
+  applyGeoGenerationPlanToDisk(plan, { distDir });
+  const generatedFiles = plan.files.map(({ filename }) => filename);
+  generatedFiles.forEach((filename) => logger.log(`✅ Generated ${filename}`));
+  if (plan.htmlUpdates.length > 0) {
+    logger.log(`✅ Injected RSS link into ${plan.htmlUpdates.length} HTML file(s)`);
   }
-
-  if (seoOptions.llmsMdMirror !== false) {
-    const mirrorMap = generateMarkdownMirrors(htmlFiles, distDir, seoOptions);
-    if (mirrorMap.size > 0) {
-      logger.log(`✅ Generated ${mirrorMap.size} Markdown mirror file(s)`);
-    }
-  }
-
-  const llmsTxtContent = generateLlmsTxt(
-    siteMetadata,
-    htmlFiles,
-    distDir,
-    seoOptions,
-  );
-  writeFileSync(resolve(distDir, 'llms.txt'), llmsTxtContent, 'utf-8');
-  generatedFiles.push('llms.txt');
-  logger.log('✅ Generated llms.txt');
-
-  if (options.llmsCtx === true) {
-    const llmsContextContent = generateLlmsContextTxt(
-      siteMetadata,
-      htmlFiles,
-      distDir,
-      {
-        ...seoOptions,
-        includeOptional: false,
-      },
-    );
-    writeFileSync(resolve(distDir, 'llms-ctx.txt'), llmsContextContent, 'utf-8');
-    generatedFiles.push('llms-ctx.txt');
-    logger.log('✅ Generated llms-ctx.txt');
-  }
-
-  if (options.llmsCtxFull === true) {
-    const llmsContextFullContent = generateLlmsContextTxt(
-      siteMetadata,
-      htmlFiles,
-      distDir,
-      {
-        ...seoOptions,
-        includeOptional: true,
-      },
-    );
-    writeFileSync(resolve(distDir, 'llms-ctx-full.txt'), llmsContextFullContent, 'utf-8');
-    generatedFiles.push('llms-ctx-full.txt');
-    logger.log('✅ Generated llms-ctx-full.txt');
-  }
-
-  if (seoOptions.llmsFull) {
-    const llmsFullContent = generateLlmsFullMd(htmlFiles, distDir, {
-      ...seoOptions,
-      url: siteMetadata.url,
-    });
-    if (llmsFullContent) {
-      writeFileSync(resolve(distDir, 'llms-full.md'), llmsFullContent, 'utf-8');
-      generatedFiles.push('llms-full.md');
-      logger.log('✅ Generated llms-full.md');
-    }
-  }
-
-  const robotsTxtContent = generateRobotsTxt(siteMetadata.url, {
-    routeBasePath,
-    prettyUrls: options.prettyUrls !== false,
-    blockGoogleExtended: options.blockGoogleExtended || false,
-    robotsDirectives: options.robotsDirectives || [],
-    sitemapUrl: seoOptions.sitemapUrl,
-  });
-  writeFileSync(resolve(distDir, 'robots.txt'), robotsTxtContent, 'utf-8');
-  generatedFiles.push('robots.txt');
-  logger.log('✅ Generated robots.txt');
-
-  if (options.generateHumans === true && packageJsonPath && existsSync(packageJsonPath)) {
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    const humansTxtContent = generateHumansTxt(packageJson, currentDate, {
-      extractTeamInfoFromPackageJson,
-      extractTechStackFromPackageJson,
-    });
-    writeFileSync(resolve(distDir, 'humans.txt'), humansTxtContent, 'utf-8');
-    generatedFiles.push('humans.txt');
-    logger.log('✅ Generated humans.txt');
-  }
-
-  if (options.generateFeed !== false) {
-    const pages = htmlFiles.map((filePath) => {
-      const htmlContent = readFileSync(filePath, 'utf-8');
-      const metadata = extractPageMetadata(htmlContent);
-      const relativePath = normalizeFilePath(relative(distDir, filePath));
-      const pagePath = resolvePagePath(relativePath, {
-        stripPathPrefixes,
-        prettyUrls: options.prettyUrls !== false,
-      });
-      const url = composePageUrl(siteMetadata.url, pagePath, routeBasePath);
-      const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, seoOptions);
-      const mtime = extractLastmod(
-        mtimeSourcePath || filePath,
-        lastmodStrategy,
-        currentDate,
-      );
-
-      return {
-        url,
-        title: metadata.title || 'Untitled',
-        description: metadata.description || '',
-        mtime,
-      };
-    });
-
-    const feedXmlContent = generateFeedXml(pages, siteMetadata, currentDate);
-    writeFileSync(resolve(distDir, 'feed.xml'), feedXmlContent, 'utf-8');
-    generatedFiles.push('feed.xml');
-    logger.log('✅ Generated feed.xml');
-  }
-
-  // Inject RSS/Atom link tag into HTML files
-  if (options.generateFeed !== false) {
-    // 读取生成的 feed.xml 并检测格式
-    const feedPath = resolve(distDir, 'feed.xml');
-    let feedFormat = 'rss'; // 默认 RSS
-    if (existsSync(feedPath)) {
-      const feedContent = readFileSync(feedPath, 'utf-8');
-      feedFormat = detectFeedFormat(feedContent);
-    }
-
-    const feedHref = `${routeBasePath}feed.xml`;
-    const feedType = feedFormat === 'atom' ? 'application/atom+xml' : 'application/rss+xml';
-    const feedTitle = feedFormat === 'atom' ? 'Atom Feed' : 'RSS Feed';
-    const newFeedLink = `<link rel="alternate" type="${feedType}" title="${feedTitle}" href="${feedHref}" />`;
-
-    // 匹配已存在的 RSS Feed 或 Atom Feed link 标签（按 title 匹配）
-    const existingFeedPattern = /<link[^>]*rel=["']alternate["'][^>]*title=["'](?:RSS Feed|Atom Feed)["'][^>]*>/i;
-
-    let injectedCount = 0;
-    for (const htmlFilePath of htmlFiles) {
-      try {
-        let htmlContent = readFileSync(htmlFilePath, 'utf-8');
-
-        // 如果已存在相同 title 的 feed link，替换它
-        if (existingFeedPattern.test(htmlContent)) {
-          htmlContent = htmlContent.replace(existingFeedPattern, newFeedLink);
-          writeFileSync(htmlFilePath, htmlContent, 'utf-8');
-          injectedCount++;
-          continue;
-        }
-
-        // 在 </head> 前插入
-        if (/<\/head>/i.test(htmlContent)) {
-          htmlContent = htmlContent.replace(/<\/head>/i, `${newFeedLink}</head>`);
-          writeFileSync(htmlFilePath, htmlContent, 'utf-8');
-          injectedCount++;
-        }
-      } catch (fileError) {
-        // Ignore file errors
-      }
-    }
-
-    if (injectedCount > 0) {
-      logger.log(`✅ Injected ${feedFormat.toUpperCase()} link into ${injectedCount} HTML file(s)`);
-    }
-  }
-
   logger.log(`\n🎉 GEO generation complete. ${generatedFiles.length} file(s) updated.`);
   return {
     distDir,
     generatedFiles,
-    includedHtmlFiles: htmlFiles.length,
-    excludedHtmlFiles: filterResult.excluded.length,
+    includedHtmlFiles: plan.report.includedHtmlFiles,
+    excludedHtmlFiles: plan.report.excludedHtmlFiles,
   };
 }
 

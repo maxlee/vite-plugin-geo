@@ -364,7 +364,7 @@ describe('llms.txt Optimization Tests', () => {
   });
 
   describe('generateLlmsTxt format optimization', () => {
-    it('should have Key Features as plain paragraph, not H2', () => {
+    it('should not invent site-specific feature copy', () => {
       const testFile = join(testDir, 'index.html');
       writeFileSync(testFile, `
         <html>
@@ -387,10 +387,9 @@ describe('llms.txt Optimization Tests', () => {
         { prettyUrls: false }
       );
       
-      // Key Features should NOT be an H2 heading
       expect(llmsTxt).not.toContain('## Key Features');
-      // It should be a plain paragraph starting with "Key Features:"
-      expect(llmsTxt).toContain('Key Features:');
+      expect(llmsTxt).not.toContain('Key Features:');
+      expect(llmsTxt).not.toMatch(/Shopify|SHOPLINE|NDJSON/i);
       // Verify it comes before the H2 sections
       const keyFeaturesIndex = llmsTxt.indexOf('Key Features:');
       const h2Index = llmsTxt.indexOf('## Docs');

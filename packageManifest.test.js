@@ -16,6 +16,7 @@ describe('vite-plugin-geo publish manifest', () => {
     'astro.js',
     'astroSitemapCompatibility.js',
     'cli.js',
+    'geoBuildPipeline.js',
     'geoGenerator.js',
     'geoMetadataResolver.js',
     'index.d.ts',
@@ -49,6 +50,7 @@ describe('vite-plugin-geo publish manifest', () => {
         'index.d.ts',
         'cli.js',
         'viteGeoGeneratorPlugin.js',
+        'geoBuildPipeline.js',
         'astroSitemapCompatibility.js',
         'geoGenerator.js',
         'geoMetadataResolver.js',
@@ -58,13 +60,14 @@ describe('vite-plugin-geo publish manifest', () => {
       },
     });
 
-    expect(manifest.peerDependencies.vite).toBe('^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0');
-    expect(manifest.repository).toMatchObject({
+    expect(manifest.peerDependencies.vite).toBe('^7.0.0 || ^8.0.0');
+    expect(manifest.engines.node).toBe('^20.19.0 || >=22.12.0');
+    expect(manifest.repository).toEqual({
       type: 'git',
-      url: expect.stringContaining('github.com'),
+      url: 'git+https://github.com/maxlee/vite-plugin-geo.git',
     });
-    expect(manifest.bugs.url).toContain('github.com');
-    expect(manifest.homepage).toContain('github.com');
+    expect(String(manifest.bugs.url).includes('maxlee/vite-plugin-geo')).toBe(true);
+    expect(String(manifest.homepage).includes('maxlee/vite-plugin-geo')).toBe(true);
   });
 
   it('packs only publishable runtime files', () => {

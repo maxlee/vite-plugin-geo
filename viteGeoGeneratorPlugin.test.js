@@ -34,6 +34,18 @@ afterEach(() => {
 });
 
 describe('viteGeoGeneratorPlugin metadata extraction', () => {
+  it('uses only the final bundle generation hook for Vite output', () => {
+    const plugin = createGeoGeneratorPlugin({
+      domain: 'https://example.com',
+      llmsMdMirror: false,
+      generateFeed: false,
+    });
+
+    expect(plugin.generateBundle).toBeDefined();
+    expect(plugin.writeBundle).toBeUndefined();
+    expect(plugin.closeBundle).toBeUndefined();
+  });
+
   it('reads the plugin version from the package manifest', () => {
     const manifest = JSON.parse(readFileSync(pluginManifestPath, 'utf-8'));
     const result = spawnSync(
@@ -256,10 +268,10 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     );
 
     expect(pluginSource).toContain('prettyUrls: options.prettyUrls !== false');
-    expect(pluginSource).toContain('if (options.generateFeed !== false)');
+    expect(pluginSource).toContain('generateFeed: options.generateFeed !== false');
   });
 
-  it('auto-skips GEO sitemap generation when Astro sitemap is configured', async () => {
+  it('reuses a sitemap already present in the final bundle', async () => {
     const distDir = join(fixtureRoot, 'dist');
     ensureDir(distDir);
     writeFixtureFile('dist/index.html', `<!doctype html>
@@ -278,11 +290,6 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
         '@astrojs/sitemap': '^3.7.3',
       },
     }, null, 2));
-    writeFixtureFile('astro.config.mjs', `
-      import sitemap from '@astrojs/sitemap';
-      export default { integrations: [sitemap()] };
-    `);
-
     const result = spawnSync(
       'node',
       [
@@ -303,7 +310,24 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
           const originalLog = console.log;
           console.log = () => {};
           try {
-            await plugin.closeBundle.handler();
+            const emitted = [];
+            await plugin.generateBundle.handler.call({
+              emitFile(file) {
+                emitted.push(file);
+              },
+            }, { dir: ${JSON.stringify(distDir)} }, {
+              'index.html': {
+                type: 'asset',
+                fileName: 'index.html',
+                source: ${JSON.stringify(readFileSync(join(distDir, 'index.html'), 'utf-8'))},
+              },
+              'catalog-index.xml': {
+                type: 'asset',
+                fileName: 'catalog-index.xml',
+                source: '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></sitemapindex>',
+              },
+            });
+            process.stdout.write(JSON.stringify(emitted));
           } finally {
             console.log = originalLog;
           }
@@ -316,9 +340,12 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     );
 
     expect(result.status).toBe(0);
-    expect(existsSync(join(distDir, 'sitemap.xml'))).toBe(false);
-    expect(readFileSync(join(distDir, 'robots.txt'), 'utf-8')).toContain('Sitemap: https://example.com/sitemap-index.xml');
-    expect(readFileSync(join(distDir, 'llms.txt'), 'utf-8')).toContain('[Sitemap](https://example.com/sitemap-index.xml)');
+    const emitted = JSON.parse(result.stdout);
+    expect(emitted.map(({ fileName }) => fileName)).not.toContain('sitemap.xml');
+    expect(emitted.find(({ fileName }) => fileName === 'robots.txt').source)
+      .toContain('Sitemap: https://example.com/catalog-index.xml');
+    expect(emitted.find(({ fileName }) => fileName === 'llms.txt').source)
+      .toContain('[Sitemap](https://example.com/catalog-index.xml)');
   });
 
   it('emits static GEO files from generateBundle when HTML assets are available', async () => {
@@ -429,7 +456,15 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
           const originalLog = console.log;
           console.log = () => {};
           try {
-            await plugin.closeBundle.handler();
+            await plugin.generateBundle.handler.call({
+              emitFile() {},
+            }, { dir: ${JSON.stringify(distDir)} }, {
+              'index.html': {
+                type: 'asset',
+                fileName: 'index.html',
+                source: ${JSON.stringify(readFileSync(join(distDir, 'index.html'), 'utf-8'))},
+              },
+            });
           } finally {
             console.log = originalLog;
           }
@@ -445,7 +480,7 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     expect(`${result.stderr}\n${result.stdout}`).toMatch(/domain/i);
   });
 
-  it('wires sourceHtmlDir defaults and unified mtime source resolution for feed', () => {
+  it('resolves sourceHtmlDir from the Vite project root', () => {
     const pluginSource = readFileSync(
       pluginSourcePath,
       'utf-8',
@@ -453,9 +488,7 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
 
     expect(pluginSource).toContain('function resolveSourceHtmlDir');
     expect(pluginSource).toContain("sourceHtmlDir: options.sourceHtmlDir || 'src/pages'");
-    expect(pluginSource).toContain('resolveLastmodSourcePath');
-    expect(pluginSource).toContain('const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, seoOptions);');
-    expect(pluginSource).toContain("'sourceHtmlDir'");
+    expect(pluginSource).toContain('resolveSourceHtmlDir(resolvedConfig, options.sourceHtmlDir)');
   });
 
   it('prints one actionable warning when the Vite entry is used inside Astro', async () => {
@@ -478,8 +511,8 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     const originalWarn = console.warn;
     console.warn = (...args) => warnings.push(args.join(' '));
     try {
-      await plugin.closeBundle.handler();
-      await plugin.closeBundle.handler();
+      await plugin.generateBundle.handler.call({ emitFile() {} }, {}, {});
+      await plugin.generateBundle.handler.call({ emitFile() {} }, {}, {});
     } finally {
       console.warn = originalWarn;
     }
@@ -487,66 +520,5 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     expect(warnings).toEqual([
       expect.stringContaining("vite-plugin-geo/astro"),
     ]);
-  });
-});
-
-describe('RSS/Atom link injection', () => {
-  it('includes RSS/Atom link injection logic in closeBundle', () => {
-    const pluginSource = readFileSync(pluginSourcePath, 'utf-8');
-
-    // 检查 RSS/Atom link 注入代码存在
-    expect(pluginSource).toContain('RSS/Atom link injection');
-    expect(pluginSource).toContain('detectFeedFormat');
-    expect(pluginSource).toContain('feedFormat');
-    expect(pluginSource).toContain('feedHref');
-    expect(pluginSource).toContain('newFeedLink');
-  });
-
-  it('detects feed format from generated feed.xml', () => {
-    const pluginSource = readFileSync(pluginSourcePath, 'utf-8');
-
-    // 检查格式检测逻辑
-    expect(pluginSource).toContain("feedFormat = detectFeedFormat(feedContent)");
-    expect(pluginSource).toContain("let feedFormat = 'rss'");
-    expect(pluginSource).toContain("feedFormat === 'atom'");
-  });
-
-  it('uses correct feed type based on format', () => {
-    const pluginSource = readFileSync(pluginSourcePath, 'utf-8');
-
-    // 检查根据格式选择正确的 MIME 类型
-    expect(pluginSource).toContain("feedFormat === 'atom' ? 'application/atom+xml' : 'application/rss+xml'");
-    expect(pluginSource).toContain("feedFormat === 'atom' ? 'Atom Feed' : 'RSS Feed'");
-  });
-
-  it('replaces existing RSS Feed or Atom Feed link tags', () => {
-    const pluginSource = readFileSync(pluginSourcePath, 'utf-8');
-
-    // 检查替换已存在的 feed link 逻辑
-    expect(pluginSource).toContain('existingFeedPattern');
-    expect(pluginSource).toContain('RSS Feed|Atom Feed');
-    expect(pluginSource).toContain('htmlContent.replace(existingFeedPattern, newFeedLink)');
-  });
-
-  it('injects link before </head> tag', () => {
-    const pluginSource = readFileSync(pluginSourcePath, 'utf-8');
-
-    // 检查注入位置逻辑
-    expect(pluginSource).toContain('</head>');
-    expect(pluginSource).toContain('htmlContent.replace');
-  });
-
-  it('constructs correct feed href with routeBasePath', () => {
-    const pluginSource = readFileSync(pluginSourcePath, 'utf-8');
-
-    // 检查 feed href 构建逻辑
-    expect(pluginSource).toContain('${routeBasePath}feed.xml');
-  });
-
-  it('logs format-specific success message', () => {
-    const pluginSource = readFileSync(pluginSourcePath, 'utf-8');
-
-    // 检查日志消息包含格式信息
-    expect(pluginSource).toContain('feedFormat.toUpperCase()');
   });
 });

@@ -188,7 +188,7 @@ describe('SEO CLI', () => {
     expect(sitemapContent).not.toContain(`<lastmod>${distMtime}</lastmod>`);
   });
 
-  it('auto-skips GEO sitemap generation when Astro sitemap is configured', async () => {
+  it('auto-skips GEO sitemap generation when a sitemap exists in final output', async () => {
     const distDir = join(fixtureRoot, 'dist');
     mkdirSync(distDir, { recursive: true });
     writeFileSync(
@@ -203,10 +203,10 @@ describe('SEO CLI', () => {
         '@astrojs/sitemap': '^3.7.3',
       },
     }, null, 2));
-    writeFileSync(join(fixtureRoot, 'astro.config.mjs'), `
-      import sitemap from '@astrojs/sitemap';
-      export default { integrations: [sitemap()] };
-    `);
+    writeFileSync(
+      join(distDir, 'sitemap-index.xml'),
+      '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></sitemapindex>',
+    );
 
     const result = await runSeoCliGenerate(
       {

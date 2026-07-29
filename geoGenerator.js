@@ -53,6 +53,57 @@ function findFirstNodeByTagName(node, tagName) {
   return null;
 }
 
+function getNodeText(node) {
+  if (!node || typeof node !== 'object') {
+    return '';
+  }
+
+  if (node.nodeName === '#text') {
+    return node.value || '';
+  }
+
+  return Array.isArray(node.childNodes)
+    ? node.childNodes.map((childNode) => getNodeText(childNode)).join('')
+    : '';
+}
+
+function getAttribute(node, name) {
+  return node?.attrs?.find((attribute) => attribute.name.toLowerCase() === name.toLowerCase())?.value || '';
+}
+
+function findNodesByTagName(node, tagName, matches = []) {
+  if (!node || typeof node !== 'object') {
+    return matches;
+  }
+
+  if (node.tagName === tagName) {
+    matches.push(node);
+  }
+
+  if (Array.isArray(node.childNodes)) {
+    node.childNodes.forEach((childNode) => findNodesByTagName(childNode, tagName, matches));
+  }
+
+  return matches;
+}
+
+function isValidLanguageTag(languageTag, { allowXDefault = false } = {}) {
+  if (allowXDefault && languageTag === 'x-default') {
+    return true;
+  }
+
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(languageTag)) {
+    return false;
+  }
+
+  try {
+    Intl.getCanonicalLocales(languageTag);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Remove blocked nodes from parse5 AST recursively.
  * @param {object} node - parse5 AST node
@@ -104,7 +155,17 @@ const XML_ENTITIES = {
  * @returns {string} Escaped XML-safe string
  */
 function escapeXml(str) {
-  return str.replace(/[&<>"']/g, (char) => XML_ENTITIES[char]);
+  return String(str).replace(/[&<>"']/g, (char) => XML_ENTITIES[char]);
+}
+
+function getPageModel(options, filePath) {
+  if (options.pageModels instanceof Map) {
+    return options.pageModels.get(filePath);
+  }
+  if (Array.isArray(options.pageModels)) {
+    return options.pageModels.find((page) => page.filePath === filePath);
+  }
+  return null;
 }
 
 /**
@@ -462,6 +523,28 @@ export function resolvePagePath(relativePath, options = {}) {
  * @param {string} htmlContent - Raw HTML content
  * @returns {string} Markdown formatted content
  */
+function convertHtmlAstToMarkdown(documentAst) {
+  const bodyNode = findFirstNodeByTagName(documentAst, 'body');
+  const contentRootNode = bodyNode || documentAst;
+
+  stripBlockedNodes(contentRootNode, MARKDOWN_STRIP_TAGS);
+  const cleanedHtml = (serialize(contentRootNode) || '').trim();
+
+  if (!cleanedHtml) {
+    return '';
+  }
+
+  const markdownContent = turndownService.turndown(cleanedHtml);
+
+  return markdownContent
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/^(\s*(?:-|\d+\.))\s+/gm, '$1 ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function convertHtmlToMarkdown(htmlContent) {
   if (typeof htmlContent !== 'string' || htmlContent.trim() === '') {
     return '';
@@ -469,25 +552,7 @@ export function convertHtmlToMarkdown(htmlContent) {
 
   try {
     const documentAst = parse(htmlContent);
-    const bodyNode = findFirstNodeByTagName(documentAst, 'body');
-    const contentRootNode = bodyNode || documentAst;
-
-    stripBlockedNodes(contentRootNode, MARKDOWN_STRIP_TAGS);
-    const cleanedHtml = (serialize(contentRootNode) || '').trim();
-
-    if (!cleanedHtml) {
-      return '';
-    }
-
-    const markdownContent = turndownService.turndown(cleanedHtml);
-
-    return markdownContent
-      .replace(/\r\n/g, '\n')
-      .replace(/\u00a0/g, ' ')
-      .replace(/[ \t]+\n/g, '\n')
-      .replace(/^(\s*(?:-|\d+\.))\s+/gm, '$1 ')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    return convertHtmlAstToMarkdown(documentAst);
   } catch (error) {
     console.warn(`⚠️  [Non-fatal] Failed HTML->Markdown conversion: ${error.message}, fallback to text-only mode`);
 
@@ -498,6 +563,30 @@ export function convertHtmlToMarkdown(htmlContent) {
       .replace(/\s+/g, ' ')
       .trim();
   }
+}
+
+export function analyzeHtmlPage(htmlContent) {
+  const source = String(htmlContent || '');
+  const documentAst = parse(source);
+  const titleNode = findFirstNodeByTagName(documentAst, 'title');
+  const htmlNode = findFirstNodeByTagName(documentAst, 'html');
+  const metaNodes = findNodesByTagName(documentAst, 'meta');
+  const descriptionNode = metaNodes.find(
+    (node) => getAttribute(node, 'name').toLowerCase() === 'description',
+  );
+  const noindex = metaNodes.some((node) => {
+    const name = getAttribute(node, 'name').toLowerCase();
+    const content = getAttribute(node, 'content').toLowerCase();
+    return name === 'robots' && content.split(/[\s,]+/).includes('noindex');
+  });
+
+  return {
+    title: getNodeText(titleNode).trim(),
+    description: getAttribute(descriptionNode, 'content').trim(),
+    lang: getAttribute(htmlNode, 'lang').trim(),
+    noindex,
+    markdown: convertHtmlAstToMarkdown(documentAst),
+  };
 }
 
 function getHtmlCandidateScore(relativePath, options = {}) {
@@ -560,26 +649,13 @@ export function dedupeHtmlFilesByPagePath(htmlFiles, distDir, options = {}) {
  */
 export function extractPageMetadata(htmlContent, options = {}) {
   const { includeLang = false } = options;
-
-  const titleMatch = htmlContent.match(/<title[^>]*>([^<]*)<\/title>/i);
-  const title = titleMatch ? titleMatch[1].trim() : '';
-
-  let description = '';
-  const metaTags = htmlContent.match(/<meta\s+[^>]*>/gi) || [];
-  for (const metaTag of metaTags) {
-    if (!/\bname\s*=\s*["']description["']/i.test(metaTag)) {
-      continue;
-    }
-    const contentMatch = metaTag.match(/\bcontent\s*=\s*(["'])([\s\S]*?)\1/i);
-    description = contentMatch ? contentMatch[2].trim() : '';
-    break;
-  }
+  const analyzed = analyzeHtmlPage(htmlContent);
+  const { title, description } = analyzed;
 
   const result = { title, description };
 
   if (includeLang) {
-    const htmlLangMatch = htmlContent.match(/<html[^>]*\blang=["']([^"']+)["'][^>]*>/i);
-    result.lang = htmlLangMatch ? htmlLangMatch[1].trim() : '';
+    result.lang = analyzed.lang;
   }
 
   return result;
@@ -641,8 +717,9 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
 
     const loc = composePageUrl(baseUrl, pagePath, options.routeBasePath);
     const { priority, changefreq } = getPagePriority(fileName, pagePath);
+    const pageModel = getPageModel(options, filePath);
     const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, options);
-    const lastmod = extractLastmod(mtimeSourcePath || filePath, lastmodStrategy, buildDate);
+    const lastmod = pageModel?.mtime || extractLastmod(mtimeSourcePath || filePath, lastmodStrategy, buildDate);
 
     // Generate hreflang links if configured
     const hreflangLinks = hreflangConfig
@@ -667,6 +744,10 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
   const xmlnsXhtml = needsXhtmlNamespace ? ' xmlns:xhtml="http://www.w3.org/1999/xhtml"' : '';
   const singleSitemapContent = buildSitemapXml(urlEntries, xmlnsXhtml);
 
+  if (!sitemapIndex && urlEntries.length > SITEMAP_MAX_URLS) {
+    throw new Error('Sitemap exceeds the 50,000 URL limit while sitemapIndex is disabled.');
+  }
+
   // Check if we need to split the sitemap by URL count or protocol byte limit.
   if (
     sitemapIndex &&
@@ -686,13 +767,18 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
     const sitemapIndexContent = generateSitemapIndex(
       sitemapFiles.map(f => f.filename),
       baseUrl,
-      buildDate
+      buildDate,
+      options.routeBasePath,
     );
 
     return [
       ...sitemapFiles,
       { filename: 'sitemap_index.xml', content: sitemapIndexContent }
     ];
+  }
+
+  if (Buffer.byteLength(singleSitemapContent, 'utf-8') > sitemapMaxBytes) {
+    throw new Error('Sitemap exceeds the configured byte limit while sitemapIndex is disabled.');
   }
 
   // Single sitemap file
@@ -741,8 +827,16 @@ function splitSitemap(urlEntries, options = {}) {
 
     if (currentChunk.length > 0 && (exceedsUrlLimit || exceedsByteLimit)) {
       chunks.push(currentChunk);
+      const singleEntryContent = buildSitemapXml([entry], xmlnsXhtml);
+      if (Buffer.byteLength(singleEntryContent, 'utf-8') > maxBytesPerFile) {
+        throw new Error('A single sitemap entry exceeds the configured byte limit.');
+      }
       currentChunk = [entry];
       return;
+    }
+
+    if (currentChunk.length === 0 && exceedsByteLimit) {
+      throw new Error('A single sitemap entry exceeds the configured byte limit.');
     }
 
     currentChunk = nextChunk;
@@ -768,9 +862,9 @@ function splitSitemap(urlEntries, options = {}) {
  * @param {string} lastmod - ISO 8601 timestamp for lastmod
  * @returns {string} sitemap_index.xml content
  */
-function generateSitemapIndex(sitemapFiles, baseUrl, lastmod) {
+function generateSitemapIndex(sitemapFiles, baseUrl, lastmod, routeBasePath = '') {
   const sitemapEntries = sitemapFiles.map((filename) => {
-    const loc = `${baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl}/${filename}`;
+    const loc = composePageUrl(baseUrl, filename, routeBasePath);
     return `  <sitemap>
     <loc>${escapeXml(loc)}</loc>
     <lastmod>${lastmod}</lastmod>
@@ -794,13 +888,10 @@ function generateHreflangLinks(pagePath, hreflangConfig, baseUrl) {
     return [];
   }
 
-  // BCP 47 format regex (inlined validateLanguageCode)
-  const bcp47Regex = /^[a-z]{2}(-[A-Z]{2})?$/;
   const hreflangLinks = [];
 
   for (const [langCode, urlPattern] of Object.entries(hreflangConfig)) {
-    // Validate language code (inlined)
-    if (!bcp47Regex.test(langCode)) {
+    if (!isValidLanguageTag(langCode, { allowXDefault: true })) {
       console.warn(`⚠️  Invalid BCP 47 language code: ${langCode}, skipping`);
       continue;
     }
@@ -931,6 +1022,42 @@ export function detectFeedFormat(feedContent) {
   return 'rss';
 }
 
+export function injectFeedLink(htmlContent, feedHref) {
+  const newFeedLink = `<link rel="alternate" type="application/rss+xml" title="RSS Feed" href="${String(feedHref)}" />`;
+  const linkPattern = /<link\b[^>]*>/gi;
+  let replaced = false;
+  const updatedHtml = String(htmlContent).replace(linkPattern, (linkTag) => {
+    const rel = linkTag.match(/\brel\s*=\s*(["'])(.*?)\1/i)?.[2]?.toLowerCase() || '';
+    const type = linkTag.match(/\btype\s*=\s*(["'])(.*?)\1/i)?.[2]?.toLowerCase() || '';
+    const title = linkTag.match(/\btitle\s*=\s*(["'])(.*?)\1/i)?.[2]?.toLowerCase() || '';
+    const isFeedLink = rel.split(/\s+/).includes('alternate')
+      && (
+        type === 'application/rss+xml'
+        || type === 'application/atom+xml'
+        || title === 'rss feed'
+        || title === 'atom feed'
+      );
+
+    if (!isFeedLink) {
+      return linkTag;
+    }
+
+    if (replaced) {
+      return '';
+    }
+    replaced = true;
+    return newFeedLink;
+  });
+
+  if (replaced) {
+    return updatedHtml;
+  }
+
+  return /<\/head>/i.test(updatedHtml)
+    ? updatedHtml.replace(/<\/head>/i, `${newFeedLink}</head>`)
+    : updatedHtml;
+}
+
 /**
  * Generate RSS 2.0 feed.xml content.
  * @param {Array<{url: string, title: string, description: string, mtime: string}>} pages - Page metadata array
@@ -1006,10 +1133,6 @@ export function generateLlmsTxt(siteMetadata, htmlFiles, distDir, options = {}) 
     lines.push('');
   }
 
-  // Key Features as plain paragraph (not H2)
-  lines.push('Key Features: JSON Schema for structured entity knowledge, llms.txt standardized format for LLM discovery, NDJSON for efficient batch processing, client-side processing with no server uploads, and multi-platform support for Shopify and SHOPLINE formats.');
-  lines.push('');
-
   groupedPages.forEach(({ section, pages: sectionPages }) => {
     lines.push(`## ${section}`);
     sectionPages.forEach((page) => {
@@ -1017,6 +1140,12 @@ export function generateLlmsTxt(siteMetadata, htmlFiles, distDir, options = {}) 
     });
     lines.push('');
   });
+
+  if (options.skuMd?.catalogUrl) {
+    lines.push('## Product Catalog');
+    lines.push(`- [Product Catalog](${options.skuMd.catalogUrl}): Browse the merchant storefront catalog`);
+    lines.push('');
+  }
 
   if (options.includeOptional !== false) {
     lines.push('## Optional');
@@ -1035,8 +1164,8 @@ function collectLlmsPages(siteMetadata, htmlFiles, distDir, options = {}) {
 
   return dedupedHtmlFiles.map((filePath) => {
     const relativePath = normalizeFilePath(relative(distDir, filePath));
-    const htmlContent = readFileSync(filePath, 'utf-8');
-    const metadata = extractPageMetadata(htmlContent);
+    const pageModel = getPageModel(options, filePath);
+    const metadata = pageModel || extractPageMetadata(readFileSync(filePath, 'utf-8'));
     const pagePath = resolvePagePath(relativePath, { ...options, prettyUrls });
     const pageUrl = llmsMdMirror
       ? composePageUrl(url, `${relativePath}.md`, options.routeBasePath)
@@ -1145,13 +1274,13 @@ export function generateLlmsContextTxt(siteMetadata, htmlFiles, distDir, options
 
   pages.forEach((page) => {
     try {
-      const htmlContent = readFileSync(page.filePath, 'utf-8');
       lines.push('');
       lines.push(`### ${page.title}`);
       lines.push('');
       lines.push(`Source: ${page.url}`);
       lines.push('');
-      lines.push(convertHtmlToMarkdown(htmlContent));
+      const pageModel = getPageModel(options, page.filePath);
+      lines.push(pageModel?.markdown || convertHtmlToMarkdown(readFileSync(page.filePath, 'utf-8')));
     } catch (error) {
       console.warn(`⚠️  [Non-fatal] Failed to include ${page.filePath} in llms context: ${error.message}`);
     }
@@ -1242,6 +1371,11 @@ export function generateRobotsTxt(baseUrl, options = {}) {
   const prettyUrls = options.prettyUrls !== false;
   const blockGoogleExtended = options.blockGoogleExtended || false;
   const robotsDirectives = options.robotsDirectives || [];
+  robotsDirectives.forEach((directive) => {
+    if (/[\u0000-\u001F\u007F]/.test(String(directive))) {
+      throw new Error('robotsDirectives must not contain control characters.');
+    }
+  });
   const lines = [];
   lines.push(`# robots.txt for ${new URL(baseUrl).hostname}`);
   lines.push('# See https://developers.google.com/crawling/docs/robots-txt/robots-txt-spec');
@@ -1318,18 +1452,19 @@ export function generateLlmsFullMd(htmlFiles, distDir, options = {}) {
       }
       
       const relativePath = normalizeFilePath(relative(distDir, filePath));
-      const htmlContent = readFileSync(filePath, 'utf-8');
-      const metadata = extractPageMetadata(htmlContent);
+      const pageModel = getPageModel(options, filePath);
+      const htmlContent = pageModel?.htmlContent || readFileSync(filePath, 'utf-8');
+      const metadata = pageModel || extractPageMetadata(htmlContent);
       // Use unified resolvePagePath with prettyUrls option
       const pagePath = resolvePagePath(relativePath, { ...options, prettyUrls });
 
       const pageUrl = composePageUrl(url, pagePath, options.routeBasePath);
 
       // Convert HTML to Markdown
-      const markdownContent = convertHtmlToMarkdown(htmlContent);
+      const markdownContent = pageModel?.markdown || convertHtmlToMarkdown(htmlContent);
 
       // Get last modified time
-      const lastmod = extractLastmod(filePath, options.lastmodStrategy || 'file-mtime', new Date().toISOString());
+      const lastmod = pageModel?.mtime || extractLastmod(filePath, options.lastmodStrategy || 'file-mtime', new Date().toISOString());
 
       pageData.push({
         title: metadata.title || 'Untitled',

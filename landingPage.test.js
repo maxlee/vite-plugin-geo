@@ -20,7 +20,7 @@ describe('landing page source contract', () => {
     expect(manifest.devDependencies?.tailwindcss).toBeUndefined();
     expect(manifest.devDependencies?.jquery).toBeUndefined();
     expect(manifest.devDependencies?.vite).toBeUndefined();
-    expect(manifest.peerDependencies.vite).toBe('^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0');
+    expect(manifest.peerDependencies.vite).toBe('^7.0.0 || ^8.0.0');
 
     expect(siteFiles).toEqual(['index.html']);
     expect(existsSync(join(siteDir, 'index.html'))).toBe(true);
