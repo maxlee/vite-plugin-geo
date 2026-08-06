@@ -16,7 +16,8 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "pack:dry-run": "npm_config_cache=/tmp/slinedev-npm-cache npm pack --dry-run --json"
+    "pack:dry-run": "npm_config_cache=/tmp/slinedev-npm-cache npm pack --dry-run --json",
+    "verify:packed-consumers": "node scripts/verify-packed-consumers.mjs"
   },
   "files": [
     "README.md",

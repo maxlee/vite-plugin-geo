@@ -54,4 +54,5 @@ jobs:
       - run: bun test
       - run: bun test --coverage --coverage-reporter=text
       - run: npm run pack:dry-run
+      - run: npm run verify:packed-consumers
       - run: git diff --check
