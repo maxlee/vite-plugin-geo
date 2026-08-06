@@ -61,6 +61,8 @@ describe('vite-plugin-geo publish manifest', () => {
     });
 
     expect(manifest.peerDependencies.vite).toBe('^7.0.0 || ^8.0.0');
+    expect(manifest.peerDependencies.astro).toBe('>=7.0.0 <8.0.0');
+    expect(manifest.peerDependenciesMeta.astro).toEqual({ optional: true });
     expect(manifest.engines.node).toBe('^20.19.0 || >=22.12.0');
     expect(manifest.repository).toEqual({
       type: 'git',
