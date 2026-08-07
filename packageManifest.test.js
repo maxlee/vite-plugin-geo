@@ -70,45 +70,7 @@ describe('vite-plugin-geo publish manifest', () => {
     });
     expect(String(manifest.bugs.url).includes('maxlee/vite-plugin-geo')).toBe(true);
     expect(String(manifest.homepage).includes('maxlee/vite-plugin-geo')).toBe(true);
-    expect(manifest.vitesh).toMatchObject({
-      schemaVersion: 1,
-      recipeVersion: 1,
-      compatibility: {
-        node: '^20.19.0 || >=22.12.0',
-        vite: '>=8.0.0 <9.0.0',
-        astro: '>=7.0.0 <8.0.0',
-      },
-      integrations: {
-        vite: {
-          integrationId: 'vite-plugin-geo:vite',
-          import: { kind: 'named', source: 'vite-plugin-geo', name: 'geo', local: 'geo' },
-          target: 'plugins',
-          call: {
-            factory: 'geo',
-            arguments: [
-              {
-                type: 'object',
-                properties: { domain: { type: 'parameter', name: 'domain' } },
-              },
-            ],
-          },
-        },
-        astro: {
-          integrationId: 'vite-plugin-geo:astro',
-          import: { kind: 'default', source: 'vite-plugin-geo/astro', local: 'geo' },
-          target: 'integrations',
-          ordering: { after: ['@astrojs/sitemap:astro'] },
-        },
-      },
-      parameters: {
-        domain: {
-          type: 'url',
-          required: true,
-          persist: true,
-          sources: ['astro-site', 'package-domain', 'interactive', 'set'],
-        },
-      },
-    });
+    expect(manifest.vitesh).toBeUndefined();
   });
 
   it('packs only publishable runtime files', () => {
