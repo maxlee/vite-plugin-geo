@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { spawnSync } from 'child_process';
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -15,6 +15,38 @@ import {
 } from './scripts/consumer-matrix-contract.mjs';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__consumer-matrix-contract__');
+const ignoredSourceDirectories = new Set([
+  '.git',
+  'coverage',
+  'dist',
+  'node_modules',
+  'tempfiles',
+  'test-llms-temp',
+  'test-temp',
+]);
+
+function findUnresolvedMergeMarkers(root) {
+  const matches = [];
+
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && ignoredSourceDirectories.has(entry.name)) {
+      continue;
+    }
+    const entryPath = join(root, entry.name);
+    if (entry.isDirectory()) {
+      matches.push(...findUnresolvedMergeMarkers(entryPath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+
+    const content = readFileSync(entryPath, 'utf-8');
+    if (/^(<<<<<<< |>>>>>>> )/m.test(content)) {
+      matches.push(entryPath);
+    }
+  }
+
+  return matches;
+}
 
 afterEach(() => {
   rmSync(fixtureRoot, { recursive: true, force: true });
@@ -48,17 +80,7 @@ describe('published consumer matrix', () => {
   });
 
   it('keeps tracked source free of unresolved merge markers', () => {
-    const result = spawnSync(
-      'git',
-      ['grep', '-n', '-E', '^(<<<<<<< |>>>>>>> )', '--', '.'],
-      {
-        cwd: process.cwd(),
-        encoding: 'utf-8',
-      },
-    );
-
-    expect(result.stdout).toBe('');
-    expect(result.status).toBe(1);
+    expect(findUnresolvedMergeMarkers(process.cwd())).toEqual([]);
   });
 
   it('requires every core output to reference the expected domain', () => {
