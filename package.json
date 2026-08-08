@@ -1,6 +1,7 @@
 {
   "name": "vite-plugin-geo",
-  "version": "0.1.2",
+  "version": "0.1.3",
+  "$schema": "https://raw.githubusercontent.com/vitejs/vite-plugin-registry/refs/heads/main/data/schema/extended-package-json.schema.json",
   "description": "Vite plugin to generate sitemap.xml, llms.txt, robots.txt, and optional GEO companion files.",
   "type": "module",
   "main": "./index.js",
@@ -16,7 +17,9 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "pack:dry-run": "npm_config_cache=/tmp/slinedev-npm-cache npm pack --dry-run --json"
+    "pack:dry-run": "npm_config_cache=/tmp/slinedev-npm-cache npm pack --dry-run --json",
+    "verify:consumers": "node scripts/verify-consumer-matrix.mjs",
+    "verify:registry-metadata": "node scripts/verify-registry-metadata.mjs"
   },
   "files": [
     "README.md",
@@ -45,17 +48,36 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/maxlee/"
+    "url": "https://github.com/maxlee/vite-plugin-geo.git"
   },
   "bugs": {
-    "url": "https://github.com/maxlee/"
+    "url": "https://github.com/maxlee/vite-plugin-geo/issues"
   },
-  "homepage": "https://github.com/maxlee/",
+  "homepage": "https://github.com/maxlee/vite-plugin-geo#readme",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
   "peerDependencies": {
+    "astro": "^7.0.0",
     "vite": "^7.0.0 || ^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "astro": {
+      "optional": true
+    }
+  },
+  "compatiblePackages": {
+    "schemaVersion": 1,
+    "vite": {
+      "type": "compatible",
+      "versions": "^7.0.0 || ^8.0.0"
+    },
+    "rollup": {
+      "type": "unknown"
+    },
+    "rolldown": {
+      "type": "unknown"
+    }
   },
   "dependencies": {
     "parse5": "8.0.1",

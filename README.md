@@ -2,7 +2,7 @@
 
 一个强大的 Vite 构建后插件，自动生成 GEO / SEO / AI 友好文件，让你的网站对搜索引擎、LLM 和用户都更友好。
 
-当前版本：`vite-plugin-geo@0.1.2`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Vite 插件只在最终资源阶段生成文件；Astro 项目正式支持两种方式：使用专用的 `vite-plugin-geo/astro` 原生集成，或在构建后串联 `astro build && vite-plugin-geo generate`。
+当前版本：`vite-plugin-geo@0.1.3`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Vite 插件只在最终资源阶段生成文件；Astro 项目正式支持两种方式：使用专用的 `vite-plugin-geo/astro` 原生集成，或在构建后串联 `astro build && vite-plugin-geo generate`。Astro 7 以可选 Astro peer 声明，因此纯 Vite 项目不需要安装 Astro。
 
 ## ✨ 核心特性
 
@@ -362,6 +362,12 @@ SKU.md 规范要求文件位于域名根路径 `/sku.md`，因此配置非根 `r
 - `catalogUrl` 在公网真实可访问。
 
 实现依据：[SKU.md v1.8 草案](https://sku.md)。截至本版本评审时，该规范仍是实验性提案，不应描述为已被主流平台采用。
+
+## 0.1.3 发布说明
+
+- npm 源码身份固定为 `https://github.com/maxlee/vite-plugin-geo.git`，并分别指向仓库 README 与 Issues。
+- Vite Registry 扩展元数据明确声明 Vite 7 / 8 compatible，Rollup 与 Rolldown 保持 unknown。
+- Astro 7 作为可选 peer 暴露；Vite、Astro 入口和生成算法保持不变。
 
 ## 0.1.2 兼容性说明
 
