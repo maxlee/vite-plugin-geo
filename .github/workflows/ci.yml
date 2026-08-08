@@ -56,5 +56,4 @@ jobs:
       - run: bun run verify:registry-metadata
       - run: bun run verify:consumers
       - run: npm run pack:dry-run
-      - run: npm run verify:packed-consumers
       - run: git diff --check

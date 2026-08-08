@@ -18,12 +18,8 @@
   },
   "scripts": {
     "pack:dry-run": "npm_config_cache=/tmp/slinedev-npm-cache npm pack --dry-run --json",
-<<<<<<< HEAD
-    "verify:packed-consumers": "node scripts/verify-packed-consumers.mjs"
-=======
     "verify:consumers": "node scripts/verify-consumer-matrix.mjs",
     "verify:registry-metadata": "node scripts/verify-registry-metadata.mjs"
->>>>>>> codex/geo-0.1.3-catalog-release
   },
   "files": [
     "README.md",

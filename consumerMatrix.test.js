@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { join } from 'path';
 import {
   ASTRO_RELEASES,
@@ -26,6 +33,32 @@ describe('published consumer matrix', () => {
     );
     expect(workflow).toContain('- run: bun run verify:consumers');
     expect(workflow).toContain('- run: bun run verify:registry-metadata');
+  });
+
+  it('removes the superseded packed-consumer gate', () => {
+    const workflow = readFileSync(
+      join(process.cwd(), '.github', 'workflows', 'ci.yml'),
+      'utf-8',
+    );
+
+    expect(workflow).not.toContain('verify:packed-consumers');
+    expect(
+      existsSync(join(process.cwd(), 'scripts', 'verify-packed-consumers.mjs')),
+    ).toBe(false);
+  });
+
+  it('keeps tracked source free of unresolved merge markers', () => {
+    const result = spawnSync(
+      'git',
+      ['grep', '-n', '-E', '^(<<<<<<< |>>>>>>> )', '--', '.'],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf-8',
+      },
+    );
+
+    expect(result.stdout).toBe('');
+    expect(result.status).toBe(1);
   });
 
   it('requires every core output to reference the expected domain', () => {
