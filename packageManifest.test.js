@@ -28,7 +28,7 @@ describe('vite-plugin-geo publish manifest', () => {
   it('points npm entry fields at package-root runtime files and whitelists only publishable paths', () => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
 
-    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(manifest.version).toBe('0.1.3');
     expect(manifest).toMatchObject({
       name: 'vite-plugin-geo',
       main: './index.js',
@@ -58,19 +58,47 @@ describe('vite-plugin-geo publish manifest', () => {
       publishConfig: {
         access: 'public',
       },
+      scripts: {
+        'pack:dry-run': 'npm_config_cache=/tmp/slinedev-npm-cache npm pack --dry-run --json',
+        'verify:consumers': 'node scripts/verify-consumer-matrix.mjs',
+        'verify:registry-metadata': 'node scripts/verify-registry-metadata.mjs',
+      },
     });
 
     expect(manifest.peerDependencies.vite).toBe('^7.0.0 || ^8.0.0');
-    expect(manifest.peerDependencies.astro).toBe('>=7.0.0 <8.0.0');
-    expect(manifest.peerDependenciesMeta.astro).toEqual({ optional: true });
+    expect(manifest.peerDependencies.astro).toBe('^7.0.0');
+    expect(manifest.peerDependenciesMeta).toEqual({
+      astro: {
+        optional: true,
+      },
+    });
     expect(manifest.engines.node).toBe('^20.19.0 || >=22.12.0');
     expect(manifest.repository).toEqual({
       type: 'git',
-      url: 'git+https://github.com/maxlee/vite-plugin-geo.git',
+      url: 'https://github.com/maxlee/vite-plugin-geo.git',
     });
-    expect(String(manifest.bugs.url).includes('maxlee/vite-plugin-geo')).toBe(true);
-    expect(String(manifest.homepage).includes('maxlee/vite-plugin-geo')).toBe(true);
-    expect(manifest.vitesh).toBeUndefined();
+    expect(manifest.bugs).toEqual({
+      url: 'https://github.com/maxlee/vite-plugin-geo/issues',
+    });
+    expect(manifest.homepage).toBe(
+      'https://github.com/maxlee/vite-plugin-geo#readme',
+    );
+    expect(manifest.$schema).toBe(
+      'https://raw.githubusercontent.com/vitejs/vite-plugin-registry/refs/heads/main/data/schema/extended-package-json.schema.json',
+    );
+    expect(manifest.compatiblePackages).toEqual({
+      schemaVersion: 1,
+      vite: {
+        type: 'compatible',
+        versions: '^7.0.0 || ^8.0.0',
+      },
+      rollup: {
+        type: 'unknown',
+      },
+      rolldown: {
+        type: 'unknown',
+      },
+    });
   });
 
   it('packs only publishable runtime files', () => {
@@ -104,6 +132,17 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(packedFiles.some((path) => path.startsWith('docs/'))).toBe(false);
     expect(packedFiles.some((path) => path.startsWith('tempfiles/'))).toBe(false);
     expect(packedFiles.some((path) => path.startsWith('dist/'))).toBe(false);
+  });
+
+  it('documents the reviewed release checks and explicit publish approval', () => {
+    const readme = readFileSync(join(packageDir, 'README.md'), 'utf-8');
+    const developmentGuide = readFileSync(join(packageDir, 'DEV.md'), 'utf-8');
+
+    expect(readme).toContain('当前版本：`vite-plugin-geo@0.1.3`');
+    expect(readme).toContain('可选 Astro peer');
+    expect(developmentGuide).toContain('bun run verify:registry-metadata');
+    expect(developmentGuide).toContain('bun run verify:consumers');
+    expect(developmentGuide).toContain('再次取得明确批准');
   });
 
   it('exposes the default geo factory and compatibility named exports', () => {
