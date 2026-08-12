@@ -367,8 +367,6 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
           const plugin = createGeoGeneratorPlugin({
             packageJsonPath: ${JSON.stringify(packageJsonPath)},
             llmsMdMirror: false,
-            llmsCtx: true,
-            llmsCtxFull: true,
             generateFeed: true,
           });
           plugin.configResolved({
@@ -413,8 +411,6 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     expect(emittedNames).toEqual(expect.arrayContaining([
       'sitemap.xml',
       'llms.txt',
-      'llms-ctx.txt',
-      'llms-ctx-full.txt',
       'robots.txt',
       'feed.xml',
     ]));
@@ -499,7 +495,6 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
 
     const plugin = createGeoGeneratorPlugin({
       domain: 'https://example.com',
-      stabilityWaitMs: 0,
     });
     plugin.configResolved({
       root: fixtureRoot,

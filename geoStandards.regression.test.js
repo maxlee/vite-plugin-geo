@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import Ajv2020 from 'ajv/dist/2020.js';
-import addFormats from 'ajv-formats';
-import { parse as parseYaml } from 'yaml';
 import {
   extractPageMetadata,
   generateLlmsTxt,
@@ -19,28 +16,21 @@ import {
 describe('standards regression coverage', () => {
   const testDir = join(process.cwd(), 'tempfiles', '__geo-standards__');
 
-  beforeEach(() => {
-    mkdirSync(testDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    rmSync(testDir, { recursive: true, force: true });
-  });
+  beforeEach(() => mkdirSync(testDir, { recursive: true }));
+  afterEach(() => rmSync(testDir, { recursive: true, force: true }));
 
   it('decodes HTML entities in page metadata', () => {
-    const metadata = extractPageMetadata(
+    expect(extractPageMetadata(
       '<html lang="en"><head><title>Tea &amp; Cake</title><meta content="Fresh &quot;daily&quot; &amp; local" name="description"></head></html>',
       { includeLang: true },
-    );
-
-    expect(metadata).toEqual({
+    )).toEqual({
       title: 'Tea & Cake',
       description: 'Fresh "daily" & local',
       lang: 'en',
     });
   });
 
-  it('includes the route base path in split sitemap index URLs', () => {
+  it('includes routeBasePath in split sitemap index URLs', () => {
     const htmlFiles = Array.from({ length: 4 }, (_, index) => {
       const filePath = join(testDir, `page-${index}.html`);
       writeFileSync(filePath, `<html><head><title>Page ${index}</title></head></html>`);
@@ -51,11 +41,8 @@ describe('standards regression coverage', () => {
       'https://example.com',
       htmlFiles,
       testDir,
-      '2026-07-29T00:00:00.000Z',
-      {
-        routeBasePath: '/store/',
-        sitemapMaxBytes: 520,
-      },
+      '2026-08-12T00:00:00.000Z',
+      { routeBasePath: '/store/', sitemapMaxBytes: 260 },
     );
     const index = result.find(({ filename }) => filename === 'sitemap_index.xml');
 
@@ -70,7 +57,7 @@ describe('standards regression coverage', () => {
       'https://example.com',
       [filePath],
       testDir,
-      '2026-07-29T00:00:00.000Z',
+      '2026-08-12T00:00:00.000Z',
       {
         hreflang: {
           'x-default': 'https://example.com/{path}',
@@ -85,7 +72,7 @@ describe('standards regression coverage', () => {
     expect(sitemap.content).toContain('hreflang="zh-Hans-CN"');
   });
 
-  it('rejects a single sitemap entry that exceeds the configured byte limit', () => {
+  it('rejects a single sitemap entry above the configured byte limit', () => {
     const filePath = join(testDir, 'index.html');
     writeFileSync(filePath, '<html><head><title>Home</title></head></html>');
 
@@ -93,7 +80,7 @@ describe('standards regression coverage', () => {
       'https://example.com',
       [filePath],
       testDir,
-      '2026-07-29T00:00:00.000Z',
+      '2026-08-12T00:00:00.000Z',
       { sitemapMaxBytes: 100 },
     )).toThrow(/single sitemap entry.*byte limit/i);
   });
@@ -114,96 +101,43 @@ describe('standards regression coverage', () => {
     })).toThrow(/control character/i);
   });
 
-  it('uses only site-derived llms.txt copy and can link the product catalog', () => {
+  it('uses only source-backed llms.txt copy and links configured catalogs', () => {
     const filePath = join(testDir, 'index.html');
-    writeFileSync(
-      filePath,
-      '<html><head><title>Tea Shop</title><meta name="description" content="Small batch tea"></head></html>',
-    );
+    writeFileSync(filePath, '<html><head><title>Tea Shop</title><meta name="description" content="Small batch tea"></head></html>');
 
     const result = generateLlmsTxt(
-      {
-        url: 'https://example.com',
-        title: 'Tea Shop',
-        description: 'Small batch tea',
-      },
+      { url: 'https://example.com', title: 'Tea Shop', description: 'Small batch tea' },
       [filePath],
       testDir,
       {
         skuMd: {
-          catalogUrl: 'https://example.com/collections/all',
+          catalog: [{ label: 'All teas', url: 'https://example.com/collections/all' }],
         },
       },
     );
 
     expect(result).not.toMatch(/Shopify|SHOPLINE|NDJSON|client-side uploads/i);
     expect(result).toContain('## Product Catalog');
-    expect(result).toContain('[Product Catalog](https://example.com/collections/all)');
+    expect(result).toContain('[All teas](https://example.com/collections/all)');
   });
 
-  it('generates a safe sku.md 1.8 manifest-basic document', () => {
+  it('keeps SKU.md at the HTTPS domain root', () => {
     const options = {
-      merchantName: 'Max: "Tea" & Co.',
-      catalogUrl: 'https://example.com/collections/all',
-      contentLanguage: 'zh-Hans',
-      market: 'CN',
+      merchantName: 'Tea Store',
+      summary: 'Small batch tea.',
+      catalog: [{ label: 'All teas', url: 'https://example.com/catalog' }],
     };
 
-    expect(validateSkuMdOptions(options, {
+    const normalized = validateSkuMdOptions(options, {
       siteUrl: 'https://example.com',
       routeBasePath: '/',
-    })).toEqual(options);
-
-    const result = generateSkuMd(options, {
-      siteUrl: 'https://example.com',
     });
+    expect(generateSkuMd(normalized, { siteUrl: 'https://example.com' }))
+      .toContain('SKU.md: [1.0.0-beta](https://sku.md/spec/1.0.0-beta/)');
 
-    expect(result).toContain('schema_version: "sku.md/1.8-draft"');
-    expect(result).toContain('document_type: "catalog_manifest"');
-    expect(result).toContain('profile: "manifest-basic"');
-    expect(result).toContain('canonical: "https://example.com/sku.md"');
-    expect(result).toContain('name: "Max: \\"Tea\\" & Co."');
-    expect(result).toContain('url: "https://example.com/collections/all"');
-    expect(result).not.toContain('checkout');
-
-    const schema = JSON.parse(
-      readFileSync(join(process.cwd(), 'test-fixtures', 'sku-md-1.8.schema.json'), 'utf-8'),
-    );
-    const ajv = new Ajv2020({ strict: false });
-    addFormats(ajv);
-    const validate = ajv.compile(schema);
-    const frontmatter = parseYaml(result.split('---')[1]);
-
-    expect(validate(frontmatter), JSON.stringify(validate.errors)).toBe(true);
-  });
-
-  it.each([
-    [{ merchantName: 'Shop', catalogUrl: 'http://example.com/catalog' }, 'HTTPS'],
-    [{ merchantName: 'Shop', catalogUrl: 'https://other.example/catalog' }, 'same origin'],
-    [{ merchantName: 'Shop', catalogUrl: 'https://example.com/catalog', market: 'USA' }, 'ISO country'],
-    [{ merchantName: 'Shop', catalogUrl: 'https://example.com/catalog', contentLanguage: 'INVALID' }, 'language'],
-  ])('rejects invalid sku.md configuration %#', (options, message) => {
     expect(() => validateSkuMdOptions(options, {
       siteUrl: 'https://example.com',
-      routeBasePath: '/',
-    })).toThrow(message);
-  });
-
-  it('rejects sku.md when the site is deployed below the domain root', () => {
-    expect(() => validateSkuMdOptions({
-      merchantName: 'Shop',
-      catalogUrl: 'https://example.com/catalog',
-    }, {
-      siteUrl: 'https://example.com',
       routeBasePath: '/store/',
-    })).toThrow(/root/i);
-
-    expect(() => validateSkuMdOptions({
-      merchantName: 'Shop',
-      catalogUrl: 'https://example.com/catalog',
-    }, {
-      siteUrl: 'https://example.com/store',
-      routeBasePath: '/',
     })).toThrow(/root/i);
   });
 });

@@ -88,7 +88,8 @@ describe('shared GEO generation pipeline', () => {
         generateFeed: false,
         skuMd: {
           merchantName: 'Example Store',
-          catalogUrl: 'https://example.com/catalog',
+          summary: 'Example catalog.',
+          catalog: [{ label: 'Catalog', url: 'https://example.com/catalog' }],
         },
       },
       currentDate: '2026-07-29T00:00:00.000Z',

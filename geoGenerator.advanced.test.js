@@ -106,7 +106,7 @@ describe('Phase 3 - Advanced Features Tests', () => {
       const result = generateSitemap('https://example.com', htmlFiles, testDir, '2026-02-28T00:00:00.000Z', {
         prettyUrls: false,
         sitemapIndex: true,
-        sitemapMaxBytes: 520,
+        sitemapMaxBytes: 260,
       });
 
       expect(result.map(({ filename }) => filename)).toContain('sitemap_index.xml');
@@ -144,14 +144,13 @@ describe('Phase 3 - Advanced Features Tests', () => {
       expect(extractLastmod(htmlFile, 'git', '2026-02-28T00:00:00.000Z')).toBe('2026-01-02T03:04:05Z');
     });
 
-    it('should fall back to file mtime when lastmodStrategy is git outside a git repository', () => {
+    it('should omit lastmod when git has no timestamp for the file', () => {
       const htmlFile = join(testDir, 'not-git.html');
       writeFileSync(htmlFile, '<html><body>No git</body></html>');
 
       const result = extractLastmod(htmlFile, 'git', '2026-02-28T00:00:00.000Z');
 
-      expect(result).not.toBe('2026-02-28T00:00:00.000Z');
-      expect(new Date(result).toString()).not.toBe('Invalid Date');
+      expect(result).toBeNull();
     });
   });
 
@@ -163,17 +162,6 @@ describe('Phase 3 - Advanced Features Tests', () => {
       expect(result).toContain('Allow: /');
       expect(result).toContain('Sitemap: https://example.com/sitemap.xml');
       expect(result).not.toContain('Google-Extended');
-    });
-
-    it('should block Google-Extended when configured', () => {
-      const result = generateRobotsTxt('https://example.com', {
-        blockGoogleExtended: true,
-      });
-
-      expect(result).toContain('User-agent: Google-Extended');
-      expect(result).toContain('Disallow: /');
-      expect(result).toContain('User-agent: *');
-      expect(result).toContain('Allow: /');
     });
 
     it('should include custom directives', () => {
@@ -189,19 +177,6 @@ describe('Phase 3 - Advanced Features Tests', () => {
       expect(result).toContain('Disallow: /admin/');
       expect(result).toContain('Disallow: /private/');
       expect(result).toContain('Crawl-delay: 10');
-    });
-
-    it('should combine blockGoogleExtended and custom directives', () => {
-      const result = generateRobotsTxt('https://example.com', {
-        blockGoogleExtended: true,
-        robotsDirectives: ['Disallow: /admin/'],
-      });
-
-      expect(result).toContain('User-agent: Google-Extended');
-      expect(result).toContain('Disallow: /');
-      expect(result).toContain('User-agent: *');
-      expect(result).toContain('Allow: /');
-      expect(result).toContain('Disallow: /admin/');
     });
 
     it('should support Pretty URLs in sitemap reference', () => {
@@ -248,7 +223,6 @@ describe('Phase 3 - Advanced Features Tests', () => {
       expect(result).toContain('Bob Johnson');
       expect(result).toContain('/* SITE */');
       expect(result).toContain('Last update: 2026-02-28');
-      expect(result).toContain('Standards: HTML5, CSS3, JavaScript');
       expect(result).toContain('Components: vite, react');
     });
 
@@ -288,9 +262,9 @@ describe('Phase 3 - Advanced Features Tests', () => {
 
       const result = generateHumansTxt(packageJson, buildDate, helpers);
 
-      expect(result).toContain('/* TEAM */');
-      expect(result).toContain('Developer: [Your Name]');
-      expect(result).toContain('Contact: [Your Email]');
+      expect(result).not.toContain('/* TEAM */');
+      expect(result).not.toMatch(/\[Your /);
+      expect(result).toContain('Components: vite');
     });
 
     it('should extract tech stack correctly', () => {
@@ -347,7 +321,8 @@ describe('Phase 3 - Advanced Features Tests', () => {
       const result = generateFeedXml(pages, siteMetadata, buildDate);
 
       expect(result).toContain('<?xml version="1.0" encoding="UTF-8"?>');
-      expect(result).toContain('<rss version="2.0">');
+      expect(result).toContain('<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">');
+      expect(result).toContain('<atom:link href="https://example.com/feed.xml" rel="self" type="application/rss+xml" />');
       expect(result).toContain('<channel>');
       expect(result).toContain('<title>Test Blog</title>');
       expect(result).toContain('<link>https://example.com</link>');
@@ -422,7 +397,7 @@ describe('Phase 3 - Advanced Features Tests', () => {
       expect(result).toContain('<link>https://example.com/post</link>');
       expect(result).toContain('<description>Test Description</description>');
       expect(result).toContain('<pubDate>');
-      expect(result).toContain('<guid>https://example.com/post</guid>');
+      expect(result).toContain('<guid isPermaLink="true">https://example.com/post</guid>');
       expect(result).toContain('</item>');
     });
 

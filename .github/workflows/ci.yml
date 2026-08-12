@@ -55,5 +55,6 @@ jobs:
       - run: bun test --coverage --coverage-reporter=text
       - run: bun run verify:registry-metadata
       - run: bun run verify:consumers
+      - run: bun audit
       - run: npm run pack:dry-run
       - run: git diff --check

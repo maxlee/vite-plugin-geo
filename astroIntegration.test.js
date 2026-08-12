@@ -88,7 +88,7 @@ describe('Astro integration', () => {
     expect(integration.name).toBe('vite-plugin-geo');
     expect(readFileSync(join(fixtureRoot, 'dist', 'sitemap.xml'), 'utf-8')).toContain('<loc>https://option.example/docs</loc>');
     expect(readFileSync(join(fixtureRoot, 'dist', 'sitemap.xml'), 'utf-8')).toContain('<loc>https://option.example/docs/ja</loc>');
-    expect(readFileSync(join(fixtureRoot, 'dist', 'robots.txt'), 'utf-8')).toContain('Sitemap: https://option.example/docs/sitemap.xml');
+    expect(existsSync(join(fixtureRoot, 'dist', 'robots.txt'))).toBe(false);
     expect(readFileSync(join(fixtureRoot, 'dist', 'llms.txt'), 'utf-8')).toContain('https://option.example/docs/ja');
     expect(existsSync(join(fixtureRoot, 'dist', 'feed.xml'))).toBe(true);
     expect(readFileSync(indexPath, 'utf-8')).toContain('href="/docs/feed.xml"');
@@ -151,7 +151,7 @@ describe('Astro integration', () => {
     await runIntegration({
       generateFeed: false,
       llmsMdMirror: false,
-      sitemapMaxBytes: 520,
+      sitemapMaxBytes: 260,
     }, {
       site: undefined,
       base: '/',

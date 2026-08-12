@@ -3,7 +3,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, basename, resolve } from 'path';
 import { parse, serialize } from 'parse5';
 import TurndownService from 'turndown';
@@ -118,27 +118,6 @@ function stripBlockedNodes(node, blockedTagNames) {
   node.childNodes.forEach((childNode) => stripBlockedNodes(childNode, blockedTagNames));
 }
 
-/**
- * Check if Markdown mirror needs update (incremental update strategy)
- * @param {string} htmlFilePath - HTML file path
- * @param {string} mdFilePath - Markdown file path
- * @returns {boolean} True if update is needed
- */
-function needsMarkdownUpdate(htmlFilePath, mdFilePath) {
-  try {
-    if (!existsSync(mdFilePath)) {
-      return true; // MD file doesn't exist, needs creation
-    }
-
-    const htmlStats = statSync(htmlFilePath);
-    const mdStats = statSync(mdFilePath);
-
-    // Update if HTML is newer than MD
-    return htmlStats.mtime > mdStats.mtime;
-  } catch (error) {
-    return true; // On error, assume update is needed
-  }
-}
 
 // XML entity lookup (defined once, reused for all escapeXml calls)
 const XML_ENTITIES = {
@@ -183,11 +162,15 @@ export function normalizeFilePath(filePath) {
 /**
  * Extract lastmod timestamp from file or use build date.
  * @param {string} filePath - Absolute file path
- * @param {string} strategy - 'file-mtime' or 'build'
- * @param {string} buildDate - ISO 8601 build date fallback
- * @returns {string} ISO 8601 timestamp (YYYY-MM-DDTHH:mm:ss.sssZ)
+ * @param {string} strategy - 'none', 'file-mtime', 'build', or 'git'
+ * @param {string} buildDate - ISO 8601 build date
+ * @returns {string|null} Verified ISO 8601 timestamp, or null when unavailable
  */
 export function extractLastmod(filePath, strategy, buildDate) {
+  if (!strategy || strategy === 'none') {
+    return null;
+  }
+
   if (strategy === 'build') {
     return buildDate;
   }
@@ -195,8 +178,8 @@ export function extractLastmod(filePath, strategy, buildDate) {
   if (strategy === 'git') {
     try {
       if (!existsSync(filePath)) {
-        console.warn(`⚠️  [Non-fatal] File not found for git lastmod: ${filePath}, using build date`);
-        return buildDate;
+        console.warn(`⚠️  [Non-fatal] File not found for git lastmod: ${filePath}, omitting lastmod`);
+        return null;
       }
 
       const result = spawnSync(
@@ -213,22 +196,23 @@ export function extractLastmod(filePath, strategy, buildDate) {
         return gitTimestamp;
       }
     } catch {
-      // Fall through to file mtime below.
+      // Omit unverifiable timestamps.
     }
+    console.warn(`⚠️  [Non-fatal] No git timestamp for ${filePath}, omitting lastmod`);
+    return null;
   }
 
-  // Default strategy is 'file-mtime'
   try {
     if (!existsSync(filePath)) {
-      console.warn(`⚠️  [Non-fatal] File not found for mtime: ${filePath}, using build date`);
-      return buildDate;
+      console.warn(`⚠️  [Non-fatal] File not found for mtime: ${filePath}, omitting lastmod`);
+      return null;
     }
     
     const stats = statSync(filePath);
     return stats.mtime.toISOString();
   } catch (error) {
-    console.warn(`⚠️  [Non-fatal] Failed to read mtime for ${filePath}: ${error.message}, using build date`);
-    return buildDate;
+    console.warn(`⚠️  [Non-fatal] Failed to read mtime for ${filePath}: ${error.message}, omitting lastmod`);
+    return null;
   }
 }
 
@@ -589,6 +573,99 @@ export function analyzeHtmlPage(htmlContent) {
   };
 }
 
+function resolveHttpUrl(value, baseUrl) {
+  try {
+    const resolved = new URL(value, baseUrl);
+    return ['http:', 'https:'].includes(resolved.protocol) ? resolved.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the first valid Markdown alternate declared by an HTML page.
+ * @param {string} htmlContent - Raw HTML source
+ * @param {string} pageUrl - Absolute public page URL
+ * @returns {string|null} Absolute Markdown URL
+ */
+export function resolveMarkdownAlternateUrl(htmlContent, pageUrl) {
+  const documentAst = parse(String(htmlContent || ''));
+  const links = findNodesByTagName(documentAst, 'link');
+
+  for (const link of links) {
+    const relTokens = getAttribute(link, 'rel').toLowerCase().split(/\s+/).filter(Boolean);
+    const type = getAttribute(link, 'type').toLowerCase();
+    if (!relTokens.includes('alternate') || type !== 'text/markdown') {
+      continue;
+    }
+    const resolved = resolveHttpUrl(getAttribute(link, 'href'), pageUrl);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Return the generated Markdown path for an HTML build asset.
+ * @param {string} relativePath - HTML path relative to the build directory
+ * @param {'append'|'replace'} style - Mirror naming style
+ * @returns {string} Markdown build asset path
+ */
+export function resolveMarkdownMirrorPath(relativePath, style = 'append') {
+  const normalizedPath = normalizeFilePath(relativePath);
+  return style === 'replace'
+    ? normalizedPath.replace(/\.html$/i, '.md')
+    : `${normalizedPath}.md`;
+}
+
+/**
+ * Add llms.txt v2 discovery links without replacing unrelated page metadata.
+ * @param {string} htmlContent - Raw HTML source
+ * @param {object} links - Discovery targets
+ * @param {string|null} links.markdownUrl - Absolute Markdown alternate URL
+ * @param {string} links.llmsUrl - Absolute scoped llms.txt URL
+ * @param {string} links.pageUrl - Absolute public page URL
+ * @returns {string} Updated HTML source
+ */
+export function injectLlmsDiscoveryLinks(htmlContent, { markdownUrl, llmsUrl, pageUrl }) {
+  const source = String(htmlContent || '');
+  if (!/<\/head>/i.test(source)) {
+    return source;
+  }
+
+  const documentAst = parse(source);
+  const links = findNodesByTagName(documentAst, 'link');
+  const hasMarkdownAlternate = links.some((link) => {
+    const relTokens = getAttribute(link, 'rel').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!relTokens.includes('alternate') || getAttribute(link, 'type').toLowerCase() !== 'text/markdown') {
+      return false;
+    }
+    return Boolean(resolveHttpUrl(getAttribute(link, 'href'), pageUrl));
+  });
+  const hasLlmsDescription = links.some((link) => {
+    const relTokens = getAttribute(link, 'rel').toLowerCase().split(/\s+/).filter(Boolean);
+    const resolvedHref = resolveHttpUrl(getAttribute(link, 'href'), pageUrl);
+    return relTokens.includes('describedby')
+      && getAttribute(link, 'type').toLowerCase() === 'text/markdown'
+      && resolvedHref === llmsUrl;
+  });
+
+  const additions = [];
+  if (markdownUrl && !hasMarkdownAlternate) {
+    additions.push(`<link rel="alternate" type="text/markdown" href="${markdownUrl}" />`);
+  }
+  if (!hasLlmsDescription) {
+    additions.push(`<link rel="describedby" type="text/markdown" href="${llmsUrl}" />`);
+  }
+  if (additions.length === 0) {
+    return source;
+  }
+
+  return source.replace(/<\/head>/i, `${additions.join('')}</head>`);
+}
+
 function getHtmlCandidateScore(relativePath, options = {}) {
   const normalizedRelativePath = normalizeFilePath(relativePath);
   // Check if path uses intermediate prefix by comparing with resolved path
@@ -662,24 +739,6 @@ export function extractPageMetadata(htmlContent, options = {}) {
 }
 
 /**
- * Infer page priority + change frequency (internal helper).
- * @param {string} fileName - HTML file name
- * @param {string} pagePath - Route page path
- * @returns {{priority: number, changefreq: string}}
- */
-function getPagePriority(fileName, pagePath) {
-  if (fileName === 'index.html' || pagePath === '') {
-    return { priority: 1.0, changefreq: 'weekly' };
-  }
-
-  if (fileName === 'docs.html' || fileName.includes('convert')) {
-    return { priority: 0.8, changefreq: 'weekly' };
-  }
-
-  return { priority: 0.6, changefreq: 'monthly' };
-}
-
-/**
  * Generate sitemap.xml content with support for splitting and hreflang.
  * Uses metadata caching for improved performance.
  * 
@@ -691,7 +750,7 @@ function getPagePriority(fileName, pagePath) {
  * @param {string} [options.routeBasePath=''] - Optional route base path
  * @param {string[]} [options.stripPathPrefixes] - Prefixes to strip
  * @param {string} [options.sourceHtmlDir='src/pages'] - Source HTML directory for mtime lookup
- * @param {string} [options.lastmodStrategy='file-mtime'] - 'file-mtime' or 'build'
+ * @param {string} [options.lastmodStrategy='none'] - 'none', 'file-mtime', 'build', or 'git'
  * @param {boolean} [options.prettyUrls=true] - Enable Pretty URLs (remove .html)
  * @param {boolean} [options.sitemapIndex=true] - Enable sitemap splitting
  * @param {object} [options.hreflang] - Hreflang configuration {langCode: urlPattern}
@@ -699,7 +758,7 @@ function getPagePriority(fileName, pagePath) {
  */
 export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, options = {}) {
   const dedupedHtmlFiles = dedupeHtmlFilesByPagePath(htmlFiles, distDir, options);
-  const lastmodStrategy = options.lastmodStrategy || 'file-mtime';
+  const lastmodStrategy = options.lastmodStrategy || 'none';
   const buildDate = currentDate.includes('T') ? currentDate : new Date(currentDate).toISOString();
   const prettyUrls = options.prettyUrls !== false;
   const sitemapIndex = options.sitemapIndex !== false; // Default to true
@@ -711,26 +770,27 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
 
   const urlEntries = dedupedHtmlFiles.map((filePath) => {
     const relativePath = normalizeFilePath(relative(distDir, filePath));
-    const fileName = relativePath.split('/').pop();
     // Use unified resolvePagePath with prettyUrls option
     const pagePath = resolvePagePath(relativePath, { ...options, prettyUrls });
 
     const loc = composePageUrl(baseUrl, pagePath, options.routeBasePath);
-    const { priority, changefreq } = getPagePriority(fileName, pagePath);
     const pageModel = getPageModel(options, filePath);
     const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, options);
-    const lastmod = pageModel?.mtime || extractLastmod(mtimeSourcePath || filePath, lastmodStrategy, buildDate);
+    const lastmod = lastmodStrategy === 'none'
+      ? null
+      : (pageModel
+        ? pageModel.mtime
+        : extractLastmod(mtimeSourcePath || filePath, lastmodStrategy, buildDate));
 
     // Generate hreflang links if configured
     const hreflangLinks = hreflangConfig
       ? generateHreflangLinks(pagePath, hreflangConfig, baseUrl)
       : [];
 
-    let urlEntry = `  <url>
-    <loc>${escapeXml(loc)}</loc>
-    <lastmod>${lastmod}</lastmod>
-    <changefreq>${changefreq}</changefreq>
-    <priority>${priority.toFixed(1)}</priority>`;
+    let urlEntry = `  <url>\n    <loc>${escapeXml(loc)}</loc>`;
+    if (lastmod) {
+      urlEntry += `\n    <lastmod>${escapeXml(lastmod)}</lastmod>`;
+    }
 
     if (hreflangLinks.length > 0) {
       urlEntry += '\n' + hreflangLinks.join('\n');
@@ -767,7 +827,7 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
     const sitemapIndexContent = generateSitemapIndex(
       sitemapFiles.map(f => f.filename),
       baseUrl,
-      buildDate,
+      lastmodStrategy === 'none' ? null : buildDate,
       options.routeBasePath,
     );
 
@@ -787,6 +847,7 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
 
 function buildSitemapXml(urlEntries, xmlnsXhtml = '') {
   return `<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated by vite-plugin-geo -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"${xmlnsXhtml}>
 ${urlEntries.join('\n')}
 </urlset>`;
@@ -794,7 +855,7 @@ ${urlEntries.join('\n')}
 
 /**
  * Split sitemap URLs into multiple files if exceeding the limit (internal helper).
- * @param {Array<{loc: string, lastmod: string, changefreq: string, priority: number}>} urlEntries - URL entries
+ * @param {string[]} urlEntries - Serialized URL entries
  * @param {object} [options={}] - Split limits
  * @param {number} [options.maxUrlsPerFile=50000] - Maximum URLs per sitemap file
  * @param {number} [options.maxBytesPerFile=52428800] - Maximum uncompressed sitemap bytes
@@ -859,19 +920,20 @@ function splitSitemap(urlEntries, options = {}) {
  * Generate sitemap index file referencing multiple sitemap files (internal helper).
  * @param {Array<string>} sitemapFiles - Array of sitemap filenames (e.g., ['sitemap_1.xml', 'sitemap_2.xml'])
  * @param {string} baseUrl - Site base URL
- * @param {string} lastmod - ISO 8601 timestamp for lastmod
+ * @param {string|null} lastmod - ISO 8601 timestamp for lastmod, or null to omit
  * @returns {string} sitemap_index.xml content
  */
 function generateSitemapIndex(sitemapFiles, baseUrl, lastmod, routeBasePath = '') {
   const sitemapEntries = sitemapFiles.map((filename) => {
     const loc = composePageUrl(baseUrl, filename, routeBasePath);
     return `  <sitemap>
-    <loc>${escapeXml(loc)}</loc>
-    <lastmod>${lastmod}</lastmod>
+    <loc>${escapeXml(loc)}</loc>${lastmod ? `
+    <lastmod>${escapeXml(lastmod)}</lastmod>` : ''}
   </sitemap>`;
   });
 
   return `<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated by vite-plugin-geo -->
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${sitemapEntries.join('\n')}
 </sitemapindex>`;
@@ -934,52 +996,41 @@ export function generateHumansTxt(packageJson, buildDate, helpers = {}) {
   const teamInfo = extractTeamInfo(packageJson);
   const techStack = extractTechStack(packageJson);
 
-  // TEAM section
-  lines.push('/* TEAM */');
   if (teamInfo.author) {
+    const authorLines = [];
     if (teamInfo.author.name) {
-      lines.push(`  Developer: ${teamInfo.author.name}`);
+      authorLines.push(`  Developer: ${teamInfo.author.name}`);
     }
     if (teamInfo.author.email) {
-      lines.push(`  Contact: ${teamInfo.author.email}`);
+      authorLines.push(`  Contact: ${teamInfo.author.email}`);
     }
     if (teamInfo.author.url) {
-      lines.push(`  From: ${teamInfo.author.url}`);
+      authorLines.push(`  From: ${teamInfo.author.url}`);
     }
-  } else {
-    lines.push('  Developer: [Your Name]');
-    lines.push('  Contact: [Your Email]');
+    if (authorLines.length > 0) {
+      lines.push('/* TEAM */', ...authorLines, '');
+    }
   }
-  lines.push('');
 
-  // THANKS section
-  if (teamInfo.contributors && teamInfo.contributors.length > 0) {
+  const contributorNames = (teamInfo.contributors || [])
+    .map((contributor) => contributor.name)
+    .filter(Boolean);
+  if (contributorNames.length > 0) {
     lines.push('/* THANKS */');
-    teamInfo.contributors.forEach(contributor => {
-      if (contributor.name) {
-        lines.push(`  ${contributor.name}`);
-      }
-    });
+    contributorNames.forEach((name) => lines.push(`  ${name}`));
     lines.push('');
   }
 
-  // SITE section
   lines.push('/* SITE */');
-
-  // Format build date
   const date = new Date(buildDate);
-  const formattedDate = date.toISOString().split('T')[0]; // YYYY-MM-DD
+  const formattedDate = date.toISOString().split('T')[0];
   lines.push(`  Last update: ${formattedDate}`);
-
-  lines.push('  Standards: HTML5, CSS3, JavaScript');
 
   if (techStack.length > 0) {
     lines.push(`  Components: ${techStack.join(', ')}`);
   }
 
-  lines.push(`  Software: ${techStack.includes('vite') ? 'Vite' : 'Build Tools'}`);
-
-  return lines.join('\n');
+  return `${lines.join('\n')}\n`;
 }
 /**
  * Convert ISO 8601 date to RFC 822 format (required by RSS 2.0) (internal helper).
@@ -1071,22 +1122,24 @@ export function injectFeedLink(htmlContent, feedHref) {
  */
 export function generateFeedXml(pages, siteMetadata, buildDate) {
   const { url, title, description, lang } = siteMetadata;
+  const feedUrl = siteMetadata.feedUrl || new URL('feed.xml', `${url.replace(/\/+$/, '')}/`).toString();
 
   // Sort pages by mtime descending (newest first)
   const sortedPages = [...pages].sort((a, b) => {
-    const dateA = new Date(a.mtime);
-    const dateB = new Date(b.mtime);
+    const dateA = a.mtime ? new Date(a.mtime).getTime() : 0;
+    const dateB = b.mtime ? new Date(b.mtime).getTime() : 0;
     return dateB - dateA;
   });
 
   const lines = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
-  lines.push('<rss version="2.0">');
+  lines.push('<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">');
   lines.push('  <channel>');
   lines.push(`    <title>${escapeXml(title)}</title>`);
   lines.push(`    <link>${escapeXml(url)}</link>`);
   lines.push(`    <description>${escapeXml(description)}</description>`);
   lines.push(`    <language>${escapeXml(lang)}</language>`);
+  lines.push(`    <atom:link href="${escapeXml(feedUrl)}" rel="self" type="application/rss+xml" />`);
   lines.push(`    <lastBuildDate>${toRFC822Date(buildDate)}</lastBuildDate>`);
   lines.push('');
 
@@ -1096,8 +1149,10 @@ export function generateFeedXml(pages, siteMetadata, buildDate) {
     lines.push(`      <title>${escapeXml(page.title)}</title>`);
     lines.push(`      <link>${escapeXml(page.url)}</link>`);
     lines.push(`      <description>${escapeXml(page.description)}</description>`);
-    lines.push(`      <pubDate>${toRFC822Date(page.mtime)}</pubDate>`);
-    lines.push(`      <guid>${escapeXml(page.url)}</guid>`);
+    if (page.mtime && !Number.isNaN(new Date(page.mtime).getTime())) {
+      lines.push(`      <pubDate>${toRFC822Date(page.mtime)}</pubDate>`);
+    }
+    lines.push(`      <guid isPermaLink="true">${escapeXml(page.url)}</guid>`);
     lines.push('    </item>');
   });
 
@@ -1141,16 +1196,25 @@ export function generateLlmsTxt(siteMetadata, htmlFiles, distDir, options = {}) 
     lines.push('');
   });
 
-  if (options.skuMd?.catalogUrl) {
+  if (Array.isArray(options.skuMd?.catalog) && options.skuMd.catalog.length > 0) {
     lines.push('## Product Catalog');
-    lines.push(`- [Product Catalog](${options.skuMd.catalogUrl}): Browse the merchant storefront catalog`);
+    options.skuMd.catalog.forEach(({ label, url: catalogUrl }) => {
+      lines.push(`- [${label}](${catalogUrl}): Browse the merchant storefront catalog`);
+    });
     lines.push('');
   }
 
   if (options.includeOptional !== false) {
-    lines.push('## Optional');
-    lines.push(`- [Sitemap](${composePublicFileUrl(url, options.sitemapUrl || 'sitemap.xml', options.routeBasePath)}): Complete list of all indexed pages`);
-    lines.push(`- [robots.txt](${composePageUrl(url, 'robots.txt', options.routeBasePath)}): Search engine crawling instructions`);
+    const optionalLinks = [];
+    if (options.includeSitemap !== false) {
+      optionalLinks.push(`- [Sitemap](${composePublicFileUrl(url, options.sitemapUrl || 'sitemap.xml', options.routeBasePath)}): Complete list of all indexed pages`);
+    }
+    if (options.generateRobots !== false) {
+      optionalLinks.push(`- [robots.txt](${composePageUrl(url, 'robots.txt')}): Search engine crawling instructions`);
+    }
+    if (optionalLinks.length > 0) {
+      lines.push('## Optional', ...optionalLinks);
+    }
   }
 
   return lines.join('\n');
@@ -1167,9 +1231,15 @@ function collectLlmsPages(siteMetadata, htmlFiles, distDir, options = {}) {
     const pageModel = getPageModel(options, filePath);
     const metadata = pageModel || extractPageMetadata(readFileSync(filePath, 'utf-8'));
     const pagePath = resolvePagePath(relativePath, { ...options, prettyUrls });
-    const pageUrl = llmsMdMirror
-      ? composePageUrl(url, `${relativePath}.md`, options.routeBasePath)
-      : composePageUrl(url, pagePath, options.routeBasePath);
+    const pageUrl = pageModel?.markdownUrl || (
+      llmsMdMirror
+        ? composePageUrl(
+          url,
+          resolveMarkdownMirrorPath(relativePath, options.llmsMdMirrorStyle),
+          options.routeBasePath,
+        )
+        : composePageUrl(url, pagePath, options.routeBasePath)
+    );
     const page = {
       filePath,
       relativePath,
@@ -1248,258 +1318,42 @@ function truncateLlmsDescription(description) {
 }
 
 /**
- * Generate llms context text by expanding the llms.txt index with page content.
- * @param {object} siteMetadata - Site metadata
- * @param {string[]} htmlFiles - Absolute HTML file paths
- * @param {string} distDir - Dist output directory
- * @param {object} [options={}] - Options
- * @param {boolean} [options.includeOptional=false] - Include Optional section links
- * @returns {string} Expanded context text
- */
-export function generateLlmsContextTxt(siteMetadata, htmlFiles, distDir, options = {}) {
-  const indexContent = generateLlmsTxt(siteMetadata, htmlFiles, distDir, {
-    ...options,
-    includeOptional: options.includeOptional === true,
-  });
-  const pages = collectLlmsPages(siteMetadata, htmlFiles, distDir, options);
-  const lines = [];
-
-  lines.push(`# ${siteMetadata.title} Context`);
-  lines.push('');
-  lines.push(indexContent);
-  lines.push('');
-  lines.push('---');
-  lines.push('');
-  lines.push('## Included Page Content');
-
-  pages.forEach((page) => {
-    try {
-      lines.push('');
-      lines.push(`### ${page.title}`);
-      lines.push('');
-      lines.push(`Source: ${page.url}`);
-      lines.push('');
-      const pageModel = getPageModel(options, page.filePath);
-      lines.push(pageModel?.markdown || convertHtmlToMarkdown(readFileSync(page.filePath, 'utf-8')));
-    } catch (error) {
-      console.warn(`⚠️  [Non-fatal] Failed to include ${page.filePath} in llms context: ${error.message}`);
-    }
-  });
-
-  return lines.join('\n');
-}
-
-/**
- * Generate Markdown mirror files for HTML pages with incremental update strategy.
- * This creates .html.md files that contain Markdown versions of HTML content,
- * making it easier for LLMs to process the content.
- * Only updates files that have changed since last generation.
- *
- * @param {string[]} htmlFiles - Array of HTML file paths
- * @param {string} distDir - Distribution directory
- * @param {object} [options={}] - Options
- * @param {boolean} [options.llmsMdMirror=true] - Enable Markdown mirror generation
- * @returns {Map<string, string>} Map of HTML file path to .md file path
- */
-export function generateMarkdownMirrors(htmlFiles, distDir, options = {}) {
-  const llmsMdMirror = options.llmsMdMirror !== false; // Default to true
-  const mirrorMap = new Map();
-
-  if (!llmsMdMirror) {
-    return mirrorMap;
-  }
-
-  const dedupedHtmlFiles = dedupeHtmlFilesByPagePath(htmlFiles, distDir, options);
-  let updatedCount = 0;
-  let skippedCount = 0;
-
-  for (const filePath of dedupedHtmlFiles) {
-    try {
-      // Read HTML content
-      if (!existsSync(filePath)) {
-        console.warn(`⚠️  [Non-fatal] File not found for Markdown mirror: ${filePath}, skipping`);
-        continue;
-      }
-
-      // Generate .html.md file path
-      const mdFilePath = `${filePath}.md`;
-
-      // Check if update is needed (incremental update)
-      if (!needsMarkdownUpdate(filePath, mdFilePath)) {
-        skippedCount++;
-        mirrorMap.set(filePath, mdFilePath);
-        continue;
-      }
-      
-      const htmlContent = readFileSync(filePath, 'utf-8');
-
-      // Convert to Markdown
-      const markdownContent = convertHtmlToMarkdown(htmlContent);
-
-      // Write Markdown file
-      writeFileSync(mdFilePath, markdownContent, 'utf-8');
-
-      // Store mapping
-      mirrorMap.set(filePath, mdFilePath);
-      updatedCount++;
-    } catch (error) {
-      console.warn(`⚠️  [Non-fatal] Failed to generate Markdown mirror for ${filePath}: ${error.message}`);
-      // Continue processing other files
-    }
-  }
-
-  if (skippedCount > 0) {
-    console.log(`   ℹ️  Skipped ${skippedCount} unchanged Markdown mirror(s) (incremental update)`);
-  }
-
-  return mirrorMap;
-}
-
-
-/**
- * Generate robots.txt content with enhanced configuration options.
- * @param {string} baseUrl - Site URL
- * @param {object} [options={}] - Options
- * @param {string} [options.routeBasePath=''] - Optional route base path
- * @param {boolean} [options.prettyUrls=true] - Enable Pretty URLs (remove .html)
- * @param {boolean} [options.blockGoogleExtended=false] - Block Google-Extended AI crawler
+ * Generate robots.txt content following RFC 9309 processing limits.
+ * @param {string} baseUrl - Origin-only site URL
+ * @param {object} [options={}] - Generator options
+ * @param {string} [options.routeBasePath=''] - Public sitemap base path
  * @param {string[]} [options.robotsDirectives=[]] - Custom robots directives
  * @param {string} [options.sitemapUrl='sitemap.xml'] - Public sitemap URL or path
  * @returns {string} robots.txt
  */
 export function generateRobotsTxt(baseUrl, options = {}) {
-  const prettyUrls = options.prettyUrls !== false;
-  const blockGoogleExtended = options.blockGoogleExtended || false;
   const robotsDirectives = options.robotsDirectives || [];
   robotsDirectives.forEach((directive) => {
     if (/[\u0000-\u001F\u007F]/.test(String(directive))) {
       throw new Error('robotsDirectives must not contain control characters.');
     }
   });
-  const lines = [];
-  lines.push(`# robots.txt for ${new URL(baseUrl).hostname}`);
-  lines.push('# See https://developers.google.com/crawling/docs/robots-txt/robots-txt-spec');
-  lines.push('');
 
-  // Block Google-Extended if configured
-  if (blockGoogleExtended) {
-    lines.push('# Block Google-Extended AI crawler');
-    lines.push('User-agent: Google-Extended');
-    lines.push('Disallow: /');
-    lines.push('');
+  const lines = [
+    `# robots.txt for ${new URL(baseUrl).hostname}`,
+    '# See https://www.rfc-editor.org/rfc/rfc9309',
+    '',
+    'User-agent: *',
+    'Allow: /',
+  ];
+  if (robotsDirectives.length > 0) {
+    lines.push('', '# Custom directives', ...robotsDirectives);
+  }
+  if (options.includeSitemap !== false) {
+    lines.push(
+      '',
+      `Sitemap: ${composePublicFileUrl(baseUrl, options.sitemapUrl || 'sitemap.xml', options.routeBasePath)}`,
+    );
   }
 
-  // Default allow all
-  lines.push('User-agent: *');
-  lines.push('Allow: /');
-
-  // Add custom directives if provided
-  if (robotsDirectives && robotsDirectives.length > 0) {
-    lines.push('');
-    lines.push('# Custom directives');
-    robotsDirectives.forEach(directive => {
-      lines.push(directive);
-    });
+  const content = `${lines.join('\n')}\n`;
+  if (Buffer.byteLength(content, 'utf-8') > 500 * 1024) {
+    throw new Error('robots.txt exceeds the 500 KiB processing limit.');
   }
-
-  lines.push('');
-  lines.push(`Sitemap: ${composePublicFileUrl(baseUrl, options.sitemapUrl || 'sitemap.xml', options.routeBasePath)}`);
-
-  return lines.join('\n');
-}
-/**
- * Generate llms-full.md - a single Markdown file containing all site content.
- * This provides LLMs with a complete snapshot of the entire website in one file.
- *
- * @param {string[]} htmlFiles - Array of HTML file paths
- * @param {string} distDir - Distribution directory
- * @param {object} options - Options
- * @param {string} options.url - Site base URL
- * @param {boolean} [options.llmsFull=false] - Enable full site Markdown generation
- * @param {boolean} [options.prettyUrls=true] - Enable Pretty URLs
- * @param {string} [options.routeBasePath=''] - Route base path
- * @returns {string} llms-full.md content
- */
-export function generateLlmsFullMd(htmlFiles, distDir, options = {}) {
-  const llmsFull = options.llmsFull || false;
-
-  if (!llmsFull) {
-    return '';
-  }
-
-  const { url } = options;
-  const prettyUrls = options.prettyUrls !== false;
-  const dedupedHtmlFiles = dedupeHtmlFilesByPagePath(htmlFiles, distDir, options);
-
-  const lines = [];
-
-  // Add title and table of contents header
-  lines.push('# Complete Site Content');
-  lines.push('');
-  lines.push('This file contains all indexable pages from the website in Markdown format.');
-  lines.push('');
-  lines.push('## Table of Contents');
-  lines.push('');
-
-  // Collect page data for TOC and content
-  const pageData = [];
-
-  for (const filePath of dedupedHtmlFiles) {
-    try {
-      if (!existsSync(filePath)) {
-        console.warn(`⚠️  [Non-fatal] File not found for llms-full.md: ${filePath}, skipping`);
-        continue;
-      }
-      
-      const relativePath = normalizeFilePath(relative(distDir, filePath));
-      const pageModel = getPageModel(options, filePath);
-      const htmlContent = pageModel?.htmlContent || readFileSync(filePath, 'utf-8');
-      const metadata = pageModel || extractPageMetadata(htmlContent);
-      // Use unified resolvePagePath with prettyUrls option
-      const pagePath = resolvePagePath(relativePath, { ...options, prettyUrls });
-
-      const pageUrl = composePageUrl(url, pagePath, options.routeBasePath);
-
-      // Convert HTML to Markdown
-      const markdownContent = pageModel?.markdown || convertHtmlToMarkdown(htmlContent);
-
-      // Get last modified time
-      const lastmod = pageModel?.mtime || extractLastmod(filePath, options.lastmodStrategy || 'file-mtime', new Date().toISOString());
-
-      pageData.push({
-        title: metadata.title || 'Untitled',
-        url: pageUrl,
-        lastmod: lastmod,
-        content: markdownContent,
-      });
-    } catch (error) {
-      console.warn(`⚠️  [Non-fatal] Failed to process ${filePath} for llms-full.md: ${error.message}`);
-      // Continue processing other files
-    }
-  }
-
-  // Generate table of contents
-  pageData.forEach((page, index) => {
-    lines.push(`${index + 1}. [${page.title}](#page-${index + 1})`);
-  });
-  lines.push('');
-  lines.push('---');
-  lines.push('');
-
-  // Generate content for each page
-  pageData.forEach((page, index) => {
-    lines.push(`<!-- Page ${index + 1} -->`);
-    lines.push(`<!-- Title: ${page.title} -->`);
-    lines.push(`<!-- URL: ${page.url} -->`);
-    lines.push(`<!-- Last Modified: ${page.lastmod} -->`);
-    lines.push('');
-    lines.push(`## Page ${index + 1}: ${page.title} {#page-${index + 1}}`);
-    lines.push('');
-    lines.push(page.content);
-    lines.push('');
-    lines.push('---');
-    lines.push('');
-  });
-
-  return lines.join('\n');
+  return content;
 }

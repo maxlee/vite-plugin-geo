@@ -108,7 +108,7 @@ async function verifyViteRelease(root, tarballPath, viteVersion) {
 
   const installedVite = await readInstalledVersion(root, 'vite');
   const installedGeo = await readInstalledVersion(root, 'vite-plugin-geo');
-  if (installedVite !== viteVersion || installedGeo !== '0.1.3') {
+  if (installedVite !== viteVersion || installedGeo !== '0.1.4') {
     throw new Error(
       `Unexpected Vite fixture versions: vite=${installedVite}, geo=${installedGeo}`,
     );
@@ -152,7 +152,7 @@ async function verifyAstroRelease(root, tarballPath, astroVersion) {
   if (
     installedAstro !== astroVersion
     || installedVite !== viteVersion
-    || installedGeo !== '0.1.3'
+    || installedGeo !== '0.1.4'
   ) {
     throw new Error(
       `Unexpected Astro fixture versions: astro=${installedAstro}, vite=${installedVite}, geo=${installedGeo}`,

@@ -34,7 +34,11 @@ function collectHtmlAssetsFromBundle(bundle) {
 
 function collectOutputAssets(bundle) {
   return Object.values(bundle || [])
-    .filter((output) => output?.type === 'asset' && output.source !== undefined)
+    .filter((output) => (
+      output?.type === 'asset'
+      && output.source !== undefined
+      && /\.(?:html?|md|txt|xml)$/i.test(output.fileName || '')
+    ))
     .map((output) => ({
       filename: output.fileName,
       content: String(output.source),
@@ -109,7 +113,6 @@ export function createGeoGeneratorPlugin(options = {}) {
             filePath: resolve(distDir, asset.fileName),
             relativePath: asset.fileName,
             htmlContent: String(asset.source),
-            mtime: currentDate,
           })),
           outputAssets: collectOutputAssets(bundle),
           options: {
@@ -177,7 +180,7 @@ function logPluginVersion(options = {}) {
   const resolvedSummary = {
     prettyUrls: options.prettyUrls !== false,
     generateFeed: options.generateFeed !== false,
-    lastmodStrategy: options.lastmodStrategy || 'file-mtime',
+    lastmodStrategy: options.lastmodStrategy || 'none',
     sourceHtmlDir: options.sourceHtmlDir || 'src/pages',
     llmsMdMirror: options.llmsMdMirror !== false,
   };
@@ -189,11 +192,8 @@ function logPluginVersion(options = {}) {
     llmsMdMirror: resolvedSummary.llmsMdMirror,
     sitemapIndex: options.sitemapIndex !== false,
     generateSitemap: options.generateSitemap !== false,
-    llmsFull: options.llmsFull === true,
-    llmsCtx: options.llmsCtx === true,
-    llmsCtxFull: options.llmsCtxFull === true,
+    generateRobots: options.generateRobots !== false,
     generateHumans: options.generateHumans === true,
-    blockGoogleExtended: options.blockGoogleExtended === true,
     skuMd: options.skuMd !== undefined,
     debug: true,
   }).filter(([, enabled]) => enabled).map(([name]) => name);

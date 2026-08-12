@@ -52,17 +52,18 @@ describe('SEO CLI', () => {
       '--no-generate-sitemap',
       '--sitemap-url',
       'sitemap-index.xml',
-      '--llms-ctx',
-      '--llms-ctx-full',
+      '--llms-md-mirror-style',
+      'replace',
+      '--no-generate-robots',
       '--lastmod-strategy',
-      'git',
+      'none',
     ]);
 
     expect(parsed.options.generateSitemap).toBe(false);
     expect(parsed.options.sitemapUrl).toBe('sitemap-index.xml');
-    expect(parsed.options.llmsCtx).toBe(true);
-    expect(parsed.options.llmsCtxFull).toBe(true);
-    expect(parsed.options.lastmodStrategy).toBe('git');
+    expect(parsed.options.llmsMdMirrorStyle).toBe('replace');
+    expect(parsed.options.generateRobots).toBe(false);
+    expect(parsed.options.lastmodStrategy).toBe('none');
   });
 
   it('defaults to the generate command and dist directory when no args are provided', async () => {
@@ -162,6 +163,7 @@ describe('SEO CLI', () => {
         sourceHtmlDir: 'src/pages',
         packageJsonPath: 'package.json',
         llmsMdMirror: false,
+        lastmodStrategy: 'file-mtime',
       },
       {
         cwd: fixtureRoot,

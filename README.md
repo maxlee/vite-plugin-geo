@@ -1,19 +1,22 @@
 # 🌍 vite-plugin-geo
 
-一个强大的 Vite 构建后插件，自动生成 GEO / SEO / AI 友好文件，让你的网站对搜索引擎、LLM 和用户都更友好。
+一个面向 Vite 与 Astro 静态站点的构建后插件，自动生成 Sitemap、robots.txt、RSS、llms.txt 和页面 Markdown 镜像。
 
-当前版本：`vite-plugin-geo@0.1.3`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Vite 插件只在最终资源阶段生成文件；Astro 项目正式支持两种方式：使用专用的 `vite-plugin-geo/astro` 原生集成，或在构建后串联 `astro build && vite-plugin-geo generate`。Astro 7 以可选 Astro peer 声明，因此纯 Vite 项目不需要安装 Astro。
+当前版本：`vite-plugin-geo@0.1.4`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Astro 7 是可选 Astro peer，纯 Vite 项目无需安装 Astro。
+
+> 这些文件用于机器发现和抓取提示，不证明任何搜索引擎、AI 产品或模型会读取、采用、索引或优先展示内容，也不承诺排名、收录或转化效果。
 
 ## ✨ 核心特性
 
-- 🗺️ **sitemap.xml** — 自动生成搜索引擎索引，支持超过 50,000 URL 自动拆分；Astro 官方 sitemap 会自动兼容
-- 🤖 **robots.txt** — 灵活的爬虫策略配置
-- 📰 **feed.xml** — RSS 2.0 订阅源，自动注入 discovery link 到所有 HTML
-- 📝 **llms.txt** — 为 LLM 提供结构化内容入口
-- 📄 **Markdown 镜像** — 每个 HTML 页面自动生成 `.md` 版本
-- 🌐 **多语言支持** — hreflang 多语言站点映射
-- 🛍️ **sku.md** — 可选的实验性商品目录发现清单，默认关闭
-- ⚡ **零配置开箱** — 合理的默认值，无需繁琐配置
+- 🗺️ **Sitemap** — 自动生成 URL 集，超过 50,000 URL 或大小限制时自动拆分；兼容 Astro 官方 Sitemap
+- 🤖 **robots.txt** — 根路径生成、通用自定义指令、控制字符与 500 KiB 限制校验
+- 📰 **RSS 2.0** — 自动注入 discovery link，包含 Atom self link 和稳定 GUID
+- 🧠 **llms.txt v2** — 页面 Markdown 发现关系、单路径作用域，以及 append / replace 两种镜像命名
+- 📄 **Markdown 镜像** — 保留已有有效 alternate，只为缺失页面生成镜像
+- 🌐 **多语言支持** — Sitemap hreflang 映射
+- 👥 **humans.txt** — 可选生成，只输出可确认信息
+- 🛍️ **SKU.md** — 可选生成 `1.0.0-beta` 纯 Markdown 根清单
+- 🧱 **统一行为** — Vite、Astro 和 CLI 共用同一套校验、规划与写入规则
 
 ## 📦 安装
 
@@ -47,14 +50,17 @@ export default defineConfig({
 });
 ```
 
-`domain` 是站点公开访问地址，用于生成 sitemap、robots.txt、feed.xml 和 llms.txt 中的完整 URL。也可以把它写在项目 `package.json` 的 `domain` 字段中；如果两处都配置，`geo({ domain })` 优先。
-如果两处都没有配置，插件会停止生成并提示补充 `domain`，避免产出错误的公开链接。
+`domain` 必须是完整的 HTTP(S) 站点源，只能包含协议、主机和可选端口，例如 `https://example.com`。不能包含账号、路径、查询参数或片段；子路径部署统一使用 `routeBasePath` 表达。
+
+也可以把站点源写在项目 `package.json` 的 `domain` 字段中；如果两处都配置，`geo({ domain })` 优先。如果两处都没有配置，插件会停止生成，避免产出错误的公开链接。
 
 ### Astro 项目
 
+Astro 正式支持以下两种方式，二选一，不能同时配置。
+
 #### 方式一：Astro 原生集成
 
-Astro 在内部 Vite 构建结束后才生成最终 HTML，因此不要把默认入口放进 `vite.plugins`。请使用 Astro 专用入口，并放进 `integrations`：
+Astro 在内部 Vite 构建结束后才生成最终 HTML，因此不要把默认入口放入 `vite.plugins`。请使用 Astro 专用入口：
 
 ```js
 // astro.config.mjs
@@ -67,13 +73,9 @@ export default defineConfig({
 });
 ```
 
-Astro 集成会在静态页面全部生成后创建 GEO 文件。域名读取顺序为 `geo({ domain })`、Astro `site`、`package.json` 的 `domain`；通常已经配置 `site` 时无需重复填写 `domain`。
-
-如果仍然在 `vite.plugins` 中使用默认入口，构建只会显示一次迁移提示，不会继续无效等待 `dist/` 中尚未生成的 HTML。
+域名读取顺序为显式 `geo({ domain })`、Astro `site`、`package.json.domain`。通常已经配置 `site` 时无需重复填写 `domain`。
 
 #### 方式二：构建后串联 CLI
-
-也可以在 Astro 构建完成后运行 `generate`，让 CLI 扫描最终生成的 HTML：
 
 ```json
 {
@@ -84,96 +86,83 @@ Astro 集成会在静态页面全部生成后创建 GEO 文件。域名读取顺
 }
 ```
 
-`generate` 默认读取 `dist/`，并从 `package.json` 的 `domain` 字段获取站点域名。如果域名只配置在 `astro.config.mjs` 的 `site` 中，CLI 不会读取它，需要在构建命令中明确传入：
+CLI 默认扫描 `dist/`。如果域名只配置在 Astro `site` 中，CLI 不会读取它，需要追加 `--domain https://example.com`。自定义输出目录使用 `--dist-dir <path>`。
 
-```json
-{
-  "scripts": {
-    "build": "astro build && vite-plugin-geo generate --domain https://example.com"
-  }
-}
-```
+默认构建结果：
 
-如果修改了 Astro 的输出目录，请追加 `--dist-dir <path>`，让 CLI 读取对应目录。
-
-原生集成和构建后 CLI 串联二选一，不要同时配置，以免重复生成 GEO 文件。
-
-构建完成后，`dist/` 目录下会自动生成：
-
-```
+```text
 dist/
 ├── sitemap.xml
 ├── robots.txt
 ├── feed.xml
 ├── llms.txt
-└── *.html.md  (每个 HTML 对应的 Markdown 镜像)
+├── index.html.md
+└── ...其他页面.html.md
 ```
 
 ## 📄 输出文件
 
 | 文件 | 默认 | 说明 |
-|------|------|------|
-| `sitemap.xml` | ✅ | 搜索引擎索引 |
-| `robots.txt` | ✅ | 爬虫策略 |
-| `feed.xml` | ✅ | RSS 2.0 订阅 + 自动注入 discovery link |
-| `llms.txt` | ✅ | LLM 内容入口 |
-| `*.html.md` | ✅ | 页面 Markdown 镜像 |
-| `llms-full.md` | ❌ | 全站 Markdown 聚合 |
-| `llms-ctx.txt` | ❌ | 不含 Optional 的 LLM 扩展上下文 |
-| `llms-ctx-full.txt` | ❌ | 含 Optional 的 LLM 扩展上下文 |
-| `humans.txt` | ❌ | 团队/技术信息 |
-| `sku.md` | ❌ | 实验性 SKU.md `manifest-basic` 根清单 |
-| `sitemap_index.xml` | 🔀 | URL 超过 50,000 时自动生成 |
+|---|---:|---|
+| `sitemap.xml` | ✅ | 50,000 URL 或配置大小超限时拆分并生成索引 |
+| `robots.txt` | 根作用域 ✅ | 非根 `routeBasePath` 默认关闭，可显式开启，但始终写到站点根目录 |
+| `feed.xml` | ✅ | RSS 2.0 订阅源，并向 HTML 注入 discovery link |
+| `llms.txt` | ✅ | 当前单一作用域的 llms.txt v2 内容索引 |
+| `*.html.md` / `*.md` | ✅ | 默认 append，可改为 replace 风格 |
+| `humans.txt` | ❌ | 可确认的团队、版权和技术信息 |
+| `sku.md` | ❌ | SKU.md `1.0.0-beta` 根目录发现清单 |
+| `sitemap_index.xml` | 🔀 | Sitemap 超限时按配置自动生成 |
+
+0.1.4 不再生成 `llms-full.md`、`llms-ctx.txt` 或 `llms-ctx-full.txt`。
 
 ## ⚙️ 配置项
 
 | 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `domain` | `string` | `package.json.domain` | 站点公开地址，插件配置优先 |
+|---|---|---|---|
+| `domain` | `string` | `package.json.domain` | 无凭据、路径、查询或片段的 HTTP(S) 站点源 |
 | `distDir` | `string` | Vite `build.outDir` | 构建输出目录 |
-| `routeBasePath` | `string` | Vite `config.base` | URL 路径前缀 |
-| `prettyUrls` | `boolean` | `true` | 无扩展名页面 URL |
-| `lastmodStrategy` | `'file-mtime' \| 'build' \| 'git'` | `'file-mtime'` | 时间策略 |
-| `excludePatterns` | `string[]` | `['404.html', '500.html']` | 排除规则 |
-| `hreflang` | `Record<string, string>` | — | 多语言映射 |
-| `generateSitemap` | `boolean` | 自动 | sitemap 生成开关，检测到 Astro 官方 sitemap 时自动关闭 |
-| `sitemapUrl` | `string` | 自动 | robots.txt / llms.txt 引用的 sitemap 地址 |
-| `llmsMdMirror` | `boolean` | `true` | Markdown 镜像 |
-| `llmsFull` | `boolean` | `false` | 全站 Markdown |
-| `llmsCtx` | `boolean` | `false` | 生成 `llms-ctx.txt` |
-| `llmsCtxFull` | `boolean` | `false` | 生成 `llms-ctx-full.txt` |
-| `llmsClassify` | `function` | 自动 | 自定义 llms.txt 分区 |
-| `llmsSections` | `object` | 自动 | 按路径片段自定义 llms.txt 分区 |
-| `generateFeed` | `boolean` | `true` | RSS 订阅 |
-| `generateHumans` | `boolean` | `false` | humans.txt |
-| `skuMd` | `object` | — | 开启实验性 SKU.md 根清单 |
-| `debug` | `boolean` | `false` | 调试日志 |
-
-`stabilityWaitMs`、`stabilityPollIntervalMs`、`stabilityRounds` 在 `0.1.2` 中仍可传入，但已经弃用且不再生效。Vite 不再轮询输出目录；Astro 集成始终使用 Astro 提供的最终输出目录。
+| `routeBasePath` | `string` | Vite / Astro base | 单一公开路径作用域 |
+| `prettyUrls` | `boolean` | `true` | 页面公开 URL 是否移除 `.html` |
+| `lastmodStrategy` | `'none' \| 'file-mtime' \| 'build' \| 'git'` | `'none'` | Sitemap 与 RSS 条目时间来源 |
+| `excludePatterns` | `string[]` | `['404.html', '500.html']` | 排除页面规则 |
+| `hreflang` | `Record<string, string>` | — | Sitemap 多语言映射 |
+| `generateSitemap` | `boolean` | 自动 | 检测到已有 Sitemap 时默认关闭 |
+| `sitemapUrl` | `string` | 自动 | robots.txt / llms.txt 引用的 Sitemap 地址 |
+| `llmsMdMirror` | `boolean` | `true` | 是否为缺少 alternate 的页面生成 Markdown 镜像 |
+| `llmsMdMirrorStyle` | `'append' \| 'replace'` | `'append'` | `about.html.md` 或 `about.md` |
+| `llmsClassify` | `function` | 自动 | 自定义 llms.txt 页面分区 |
+| `llmsSections` | `Record<string, string \| string[]>` | 自动 | 按路径片段配置 llms.txt 分区 |
+| `generateRobots` | `boolean` | 按作用域 | 根作用域默认开启，非根作用域默认关闭 |
+| `robotsDirectives` | `string[]` | `[]` | 通用 robots.txt 自定义指令 |
+| `generateFeed` | `boolean` | `true` | RSS 订阅源开关 |
+| `generateHumans` | `boolean` | `false` | humans.txt 开关 |
+| `skuMd` | `SkuMdOptions` | — | SKU.md 根清单配置 |
+| `debug` | `boolean` | `false` | 输出生成摘要 |
 
 <details>
 <summary>📋 查看完整配置项</summary>
 
 | 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `stripPathPrefixes` | `string[]` | `['src/pages/']` | URL 剥离前缀 |
-| `sourceHtmlDir` | `string` | `'src/pages'` | 源码 HTML 目录 |
-| `stabilityWaitMs` | `number` | — | 已弃用，仅兼容旧配置 |
-| `stabilityPollIntervalMs` | `number` | — | 已弃用，仅兼容旧配置 |
-| `stabilityRounds` | `number` | — | 已弃用，仅兼容旧配置 |
-| `packageJsonPath` | `string \| false` | `'./package.json'` | 读取 `domain` 和团队信息 |
-| `sitemapIndex` | `boolean` | `true` | 自动拆分 sitemap |
-| `sitemapMaxBytes` | `number` | `52428800` | 单个 sitemap 未压缩大小上限 |
-| `blockGoogleExtended` | `boolean` | `false` | 屏蔽 Google-Extended |
-| `robotsDirectives` | `string[]` | `[]` | 自定义 robots 指令 |
+|---|---|---|---|
+| `stripPathPrefixes` | `string[]` | `['src/pages/']` | 计算公开 URL 时剥离的源码路径前缀 |
+| `sourceHtmlDir` | `string` | `'src/pages'` | `file-mtime` 与 Git 时间解析使用的源码 HTML 目录 |
+| `packageJsonPath` | `string \| false` | `'./package.json'` | 项目元数据路径；`false` 表示不读取 |
+| `sitemapIndex` | `boolean` | `true` | 是否允许自动拆分 Sitemap |
+| `sitemapMaxBytes` | `number` | `52428800` | 单个未压缩 Sitemap 的字节上限，不能超过 50 MiB |
+| `skuMd.merchantName` | `string` | 首页真实标题 | 商户名称；无法可靠推导时构建失败 |
+| `skuMd.summary` | `string` | 首页真实描述 | 商户摘要；无法可靠推导时构建失败 |
+| `skuMd.catalog` | `{ label; url }[]` | 必填 | 至少一个同源 HTTPS 目录链接 |
 
 </details>
 
+旧配置键不会被忽略或兼容映射。`llmsFull`、`llmsCtx`、`llmsCtxFull`、`blockGoogleExtended`、三个 `stability*` 选项，以及 SKU.md 的 `catalogUrl`、`contentLanguage`、`market` 都会明确报错。
+
 ## Astro 官方 Sitemap 兼容
 
-如果 Astro 项目已经使用 `@astrojs/sitemap`，两项集成都放在 `integrations`，并确保 `sitemap()` 排在 `geo()` 前。`vite-plugin-geo` 不会分析配置源码，而是在自己的构建结束钩子中检查真实 Sitemap 产物：
+如果 Astro 项目已经使用 `@astrojs/sitemap`，请把 `sitemap()` 放在 `geo()` 前面：
 
 ```js
+import { defineConfig } from 'astro/config';
 import sitemap from '@astrojs/sitemap';
 import geo from 'vite-plugin-geo/astro';
 
@@ -183,9 +172,11 @@ export default defineConfig({
 });
 ```
 
-- 不再生成自己的 `sitemap.xml`
-- 继续生成 `llms.txt`、`robots.txt`、`feed.xml` 等 GEO 文件
-- 自动让 `robots.txt` 和 `llms.txt` 指向实际发现的 Sitemap 文件，包括自定义 `filenameBase`
+插件在 Astro 的最终构建阶段检查真实 Sitemap 产物：
+
+- 跳过重复的 Sitemap 生成；
+- 继续生成 llms.txt、robots.txt、RSS 等已开启文件；
+- 让 robots.txt 和 llms.txt 指向实际发现的 Sitemap，包括自定义 `filenameBase`。
 
 需要手动覆盖时，可以使用：
 
@@ -209,11 +200,11 @@ bunx vite-plugin-geo generate
 vite-plugin-geo generate \
   --domain https://example.com \
   --dist-dir dist \
-  --source-html-dir src/pages \
-  --lastmod-strategy file-mtime \
-  --no-generate-humans
+  --lastmod-strategy none \
+  --llms-md-mirror-style append \
+  --generate-robots
 
-# 使用配置文件
+# 使用 JSON 配置文件
 vite-plugin-geo generate --config ./geo.config.json
 ```
 
@@ -222,95 +213,120 @@ Astro 构建串联请参阅上方“[Astro 项目](#astro-项目)”中的“方
 <details>
 <summary>📖 CLI 详细说明</summary>
 
-**本地调试（仓库内）：**
-
-```bash
-node packages/vite-plugin-geo/cli.js generate
-```
-
-**安装后使用：**
-
-```bash
-./node_modules/.bin/vite-plugin-geo generate
-```
-
-说明：
-- 普通终端里，本地安装的包不会自动加入系统 PATH
-- 在 npm script、`node_modules/.bin` 已进 PATH 的终端，或通过 `npx` / `yarn` / `bunx` 执行时，可以直接用命令名
-- `generate` 是默认命令，`distDir` 默认是 `dist`
-
-**支持的参数：**
+`generate` 是默认命令。安装后可以通过 `npx`、`bunx`、npm script 或 `./node_modules/.bin/vite-plugin-geo` 运行。
 
 | 参数 | 说明 |
-|------|------|
-| `--domain <url>` | 站点公开地址，优先于 `package.json.domain` |
-| `--dist-dir <path>` | 构建输出目录 |
-| `--route-base-path <path>` | URL 路径前缀 |
+|---|---|
+| `--domain <url>` | 站点源，优先于 `package.json.domain` |
+| `--dist-dir <path>` | 构建输出目录，默认 `dist` |
+| `--route-base-path <path>` | URL 单一作用域前缀 |
 | `--source-html-dir <path>` | 源码 HTML 目录 |
-| `--lastmod-strategy <value>` | 时间策略：`file-mtime`、`build` 或 `git` |
-| `--sitemap-url <path-or-url>` | robots.txt / llms.txt 引用的 sitemap 地址 |
+| `--package-json-path <path>` | package.json 路径；也支持 `--package-json-path=false` |
+| `--strip-path-prefixes <list>` | 逗号分隔的路径前缀 |
+| `--exclude-patterns <list>` | 逗号分隔的排除规则 |
+| `--lastmod-strategy <value>` | `none`、`file-mtime`、`build` 或 `git` |
+| `--llms-md-mirror-style <value>` | `append` 或 `replace` |
+| `--robots-directives <list>` | 逗号分隔的通用 robots 指令 |
+| `--sitemap-url <path-or-url>` | robots.txt / llms.txt 引用的 Sitemap 地址 |
 | `--pretty-urls / --no-pretty-urls` | URL 模式开关 |
-| `--generate-sitemap / --no-generate-sitemap` | sitemap 生成开关 |
-| `--llms-ctx / --no-llms-ctx` | llms-ctx.txt 生成开关 |
-| `--llms-ctx-full / --no-llms-ctx-full` | llms-ctx-full.txt 生成开关 |
-| `--generate-feed / --no-generate-feed` | RSS 生成开关 |
+| `--sitemap-index / --no-sitemap-index` | Sitemap 自动拆分开关 |
+| `--generate-sitemap / --no-generate-sitemap` | Sitemap 生成开关 |
+| `--generate-robots / --no-generate-robots` | robots.txt 生成开关 |
+| `--llms-md-mirror / --no-llms-md-mirror` | Markdown 镜像开关 |
+| `--generate-feed / --no-generate-feed` | RSS 开关 |
 | `--generate-humans / --no-generate-humans` | humans.txt 开关 |
+| `--debug / --no-debug` | 调试摘要开关 |
 | `--config <path>` | JSON 配置文件路径 |
+
+被删除的旧参数会以 unknown argument 失败。
 
 </details>
 
 ## 📝 行为契约
 
+审核日期：2026-08-12。该日期表示 v0.1.4 的公开资料审核快照，不代表第三方规范以后不会变化。
+
+| 文件或机制 | 状态 | v0.1.4 处理 |
+|---|---|---|
+| `llms.txt` v2 | 社区开放提案，不是 IETF/W3C 标准 | 单作用域索引、Markdown alternate 和 describedby 发现链接 |
+| `robots.txt` | IETF Standards Track，RFC 9309 | 根文件、通用指令、控制字符和 500 KiB 校验 |
+| Sitemap 0.9 | 行业协议，不是 IETF/W3C 标准 | URL 集、hreflang、自动拆分和索引 |
+| RSS 2.0.11 | 稳定公开规范，不是 IETF 标准 | RSS 2.0、Atom self link、稳定 GUID |
+| `humans.txt` | 社区约定 | 可选生成，仅包含可确认信息 |
+| SKU.md `1.0.0-beta` | 实验性社区提案 | 可选生成根目录发现清单 |
+
 ### 🔗 URL 生成规则
 
 | 模式 | 输入 | 输出 |
-|------|------|------|
+|---|---|---|
 | `prettyUrls: true` | `about.html` | `/about` |
 | `prettyUrls: true` | `docs/index.html` | `/docs` |
 | `prettyUrls: false` | `about.html` | `/about.html` |
-| 首页 | `index.html` | `/` (始终) |
+| 首页 | `index.html` | `/`（始终） |
 
-### 📰 RSS Link 注入
+`domain` 只表示站点源；所有子路径由 `routeBasePath` 表达。插件先规划并校验全部目标路径，再统一写入。任何配置、路径或用户文件冲突都会在写入前停止，避免留下半成品。
 
-- 固定生成 RSS 2.0，并注入 `application/rss+xml`
-- 已存在的 RSS 或 Atom discovery link 会按属性语义识别并替换，不依赖属性顺序
-- 重复执行不会插入多个订阅链接
+### 🧠 llms.txt v2
 
-### 🕐 时间来源
+实现依据：[llms.txt proposal](https://llmstxt.org/)、[变更记录](https://llmstxt.org/changes.html)、[IANA Link Relation Types](https://www.iana.org/assignments/link-relations/link-relations.xhtml)、[RFC 8288 Web Linking](https://www.rfc-editor.org/rfc/rfc8288) 和 [Chrome Lighthouse llms.txt audit](https://developer.chrome.com/docs/lighthouse/agentic-browsing/llms-txt)。
 
-默认优先级：源码 HTML mtime → dist HTML mtime → 构建时间。
+llms.txt v2 是 2026-08-10 更新的社区提案，不是正式 Web 标准。v0.1.4 的约定如下：
 
-如果使用 `lastmodStrategy: 'git'`，插件会先读取对应文件的最新 Git 提交时间；如果当前目录不是 Git 仓库，或文件没有提交记录，会自动回到文件修改时间。
+- 每个收录页面注入 `rel="describedby" type="text/markdown"`，指向当前作用域的 llms.txt；
+- 缺少 Markdown alternate 时生成镜像，并注入 `rel="alternate" type="text/markdown"`；
+- 已有有效 Markdown alternate 时保留原标签，在 llms.txt 中采用第一个有效地址，不重复生成镜像；
+- append 默认生成 `about.html.md`，replace 生成 `about.md`；
+- `routeBasePath: '/docs/'` 生成 `/docs/llms.txt`，但不会自动创建更深层作用域；
+- `noindex`、404 / 500 和匹配 `excludePatterns` 的页面不注入、不收录；
+- 重复执行不追加重复标签，目标路径与手写文件冲突时构建停止。
+
+提案没有标准版本字段，因此生成文件不会写 `version: 2`。`Optional` 只是内容组织约定，没有机器可执行语义。`llmsMdMirror: false` 会关闭自动镜像；已有 alternate 仍会采用，没有 alternate 的页面则使用 HTML URL。
+
+插件只负责静态 HTML 的 `<link>`。HTTP `Link` 响应头属于托管平台或服务器职责，插件不会模拟它。
+
+### 🗺️ Sitemap
+
+实现依据：[Sitemaps protocol](https://www.sitemaps.org/protocol.html) 和 [Google Sitemap 指南](https://developers.google.com/search/docs/crawling-indexing/sitemaps/build-sitemap)。
+
+- 单个 Sitemap 最多 50,000 URL，未压缩大小最多 50 MB；超过限制时生成分片与 Sitemap index；
+- 默认 `lastmodStrategy: 'none'`。仅在显式选择 `git`、`file-mtime` 或 `build` 时尝试写入；选定来源无法提供可信单页时间时省略该字段；
+- 不生成 `priority` 或 `changefreq`，Google 明确说明会忽略这两个值；
+- Sitemap 可以帮助发现 URL，但不保证抓取或索引。
 
 ### 🤖 robots 与 noindex 边界
 
-`robots.txt` 是抓取提示，不是访问控制。自定义指令含控制字符时构建会失败。页面过滤只读取最终 HTML 中的 robots meta `noindex`；部署服务器后来添加的 `X-Robots-Tag` 无法在构建期识别。`blockGoogleExtended` 只控制 Google-Extended，不影响 Google Search 收录或排名。
+实现依据：[RFC 9309](https://www.rfc-editor.org/rfc/rfc9309)、[Google robots.txt 文档](https://developers.google.com/search/docs/crawling-indexing/robots/robots_txt) 和 [OpenAI crawler 说明](https://developers.openai.com/api/docs/bots)。
 
-### 🧠 llms.txt 结构
+- robots.txt 的公开位置始终是站点源的 `/robots.txt`，不能由子路径文件代替；
+- 根作用域默认生成，非根作用域默认关闭；即使显式开启也仍写到站点根目录；
+- 自定义指令含控制字符或生成内容超过 500 KiB 时，构建会失败；
+- robots.txt 是抓取提示，不是授权或安全机制，敏感资源仍需身份验证和服务端访问控制；
+- 页面过滤读取最终 HTML 中的 robots meta `noindex`；部署后添加的 `X-Robots-Tag` 无法在构建期识别。
 
-`llms.txt` 按 llmstxt.org 提案生成：
+OpenAI 将 OAI-SearchBot 用于搜索，GPTBot 用于可能进入基础模型训练的抓取，ChatGPT-User 用于用户触发的访问。三者用途及 robots.txt 适用方式不同；插件不内置厂商快捷开关，请用通用 `robotsDirectives` 分别配置。
 
-- H1 使用站点名
-- blockquote 使用站点描述
-- 页面链接按 `Docs`、`Examples`、`API` 自动分区
-- `Optional` 分区放 sitemap 和 robots.txt 等可跳过链接
-- 默认链接到 `.html.md` Markdown mirror，便于 LLM 读取
+### 📰 RSS Link 与时间
 
-`llms.txt` 目前是社区提案，不是正式 Web 标准。`llms-ctx.txt`、`llms-ctx-full.txt` 和 `llms-full.md` 是本插件的扩展输出。
+实现依据：[RSS 2.0.11 specification](https://www.rssboard.org/rss-specification)。
 
-需要自定义分区时：
+- 生成 RSS 2.0，并向页面注入 `application/rss+xml` discovery link；
+- 已存在的 RSS 或 Atom discovery link 按属性语义识别并替换，重复执行不会注入多份；
+- Feed 包含 Atom self link，以页面规范 URL 作为稳定 GUID；
+- `lastBuildDate` 表示本次生成时间；没有可信页面时间时省略条目 `pubDate`。
 
-```js
-geo({
-  domain: 'https://example.com',
-  llmsSections: {
-    Guides: ['guide', 'learn'],
-    API: ['api', 'reference'],
-  },
-})
-```
+### 👥 humans.txt
 
-也可以用 `llmsClassify(page)` 完全接管分类。
+实现依据：[humans.txt convention](https://humanstxt.org/Standard.html)。它是非正式社区约定。文件只包含明确配置或可从 `package.json`、构建过程可靠推导的信息，不写 `TODO`、示例联系人或猜测的技术栈。
+
+### 🛍️ SKU.md 1.0.0-beta
+
+实现依据：[SKU.md 1.0.0-beta specification](https://sku.md/spec/1.0.0-beta/sku-md-spec.md) 和 [changelog](https://sku.md/spec/1.0.0-beta/changelog.md)。这是不兼容旧 YAML 草案的实验性纯 Markdown 格式。
+
+- 固定生成到站点根路径 `/sku.md`，不支持非根 `routeBasePath`；
+- 包含 `1.0.0-beta` 版本行、一个商户标题与摘要、Website、Catalog，以及至少一个同源 HTTPS 目录链接；
+- 总大小不超过 65,536 UTF-8 字节，单行不超过 8,192 字节；
+- `merchantName` 和 `summary` 可从首页真实元数据推导，否则构建失败；`catalog` 必须明确提供且非空；
+- 只声明目录入口，不生成商品知识文档，也不声明价格、库存、税费、配送、支付、交易或结账能力。
 
 ## 💡 常见配置
 
@@ -324,6 +340,19 @@ geo({
 })
 ```
 
+### 子路径与 replace 镜像
+
+```js
+geo({
+  domain: 'https://example.com',
+  routeBasePath: '/docs/',
+  llmsMdMirrorStyle: 'replace',
+  generateRobots: false,
+})
+```
+
+此配置生成 `/docs/llms.txt` 与 `about.md` 风格镜像。非根作用域默认不生成 robots.txt；示例显式写出该选择，便于审阅。
+
 ### 多语言站点
 
 ```js
@@ -332,68 +361,58 @@ geo({
   hreflang: {
     en: 'https://example.com/{path}',
     'zh-CN': 'https://example.com/zh/{path}',
-    'zh-Hans': 'https://example.com/zh-hans/{path}',
     'x-default': 'https://example.com/{path}',
   },
 })
 ```
 
-### 实验性 SKU.md 商品目录清单
+### SKU.md 商户根清单
 
 ```js
 geo({
   domain: 'https://shop.example.com',
   skuMd: {
     merchantName: 'Example Store',
-    catalogUrl: 'https://shop.example.com/collections/all',
-    contentLanguage: 'zh-CN',
-    market: 'CN',
+    summary: 'Independent tea catalog.',
+    catalog: [
+      {
+        label: 'All products',
+        url: 'https://shop.example.com/collections/all',
+      },
+    ],
   },
 })
 ```
 
-该功能固定生成 `sku.md/1.8-draft` 的 `manifest-basic`，只声明同源 HTTPS 商品目录入口，不联网检查目录，不生成商品文档，也不声明实时价格、库存、交易或结账能力。它是实验性社区提案，不能替代 Product JSON-LD、UCP、ACP 或店铺实时接口。
+如果省略 `merchantName` 或 `summary`，插件只会采用首页真实 `title` 和 description；无法可靠推导时停止构建，不会编造内容。
 
-SKU.md 规范要求文件位于域名根路径 `/sku.md`，因此配置非根 `routeBasePath` 或 Vite `base` 时会直接失败。部署后还需检查：
+## 🔭 已审核但不生成
 
-- `/sku.md` 返回 HTTP 200；
-- `Content-Type` 为 `text/markdown; charset=utf-8`；
-- 缓存头符合店铺更新频率；
-- `catalogUrl` 在公网真实可访问。
+| 提案或机制 | 审核结论 |
+|---|---|
+| [IETF AIPREF](https://datatracker.ietf.org/group/aipref/) | 截至审核日，词汇表仍是 `draft-ietf-aipref-vocab-06`，HTTP 关联草案已过期；尚未成为 RFC |
+| [Cloudflare Content Signals](https://developers.cloudflare.com/bots/additional-configurations/managed-robots-txt/) | 平台特定实现；`content-use` 仍标为测试功能，不是通用 IETF Content-Usage 标准 |
+| [W3C TDM Reservation Protocol](https://www.w3.org/community/reports/tdmrep/CG-FINAL-tdmrep-20240510/) | W3C Community Group Final Report，不是 W3C Recommendation |
+| `ai.txt` | 个别 Internet-Draft / 社区方案，没有稳定的通用部署约定 |
+| [Shopify `agents.md`](https://shopify.dev/changelog/customize-llmstxt-llms-fulltxt-and-agentsmd) | Shopify 店面约定，不应扩展为所有 Vite 网站的默认文件 |
+| [WebMCP Draft Community Group Report](https://webmachinelearning.github.io/webmcp/) | 浏览器运行时工具 API，不是静态规范文件，也不是 W3C 标准或标准轨道文档 |
 
-实现依据：[SKU.md v1.8 草案](https://sku.md)。截至本版本评审时，该规范仍是实验性提案，不应描述为已被主流平台采用。
+v0.1.4 不会生成以上文件，也不会把它们映射成 robots.txt 或 llms.txt 的别名。
 
-## 0.1.3 发布说明
+## 🆕 0.1.4 发布说明
 
-- npm 源码身份固定为 `https://github.com/maxlee/vite-plugin-geo.git`，并分别指向仓库 README 与 Issues。
-- Vite Registry 扩展元数据明确声明 Vite 7 / 8 compatible，Rollup 与 Rolldown 保持 unknown。
-- Astro 7 作为可选 peer 暴露；Vite、Astro 入口和生成算法保持不变。
+- 完整实现 llms.txt v2 的 HTML 发现关系、单路径作用域和 append / replace 镜像；
+- 删除三类旧 llms 扩展文件与对应配置；
+- Sitemap 默认不写 `lastmod`，并删除 `priority`、`changefreq`；
+- 新增独立 `generateRobots` 开关，非根作用域默认不生成 robots.txt；
+- RSS 增加 Atom self link 和稳定 GUID，不再编造条目时间；
+- SKU.md 从旧 YAML 草案切换到 `1.0.0-beta` 纯 Markdown 根清单；
+- 删除 `blockGoogleExtended`、三个 `stability*` 选项及旧 SKU.md 配置，不提供兼容层。
 
-## 0.1.2 兼容性说明
+发布前应在本地完成完整测试、覆盖率、消费者矩阵、注册表元数据、打包清单、依赖安全和差异格式检查。发布、推送和部署必须另行取得明确批准。
 
-- 移除 Vite 5 / 6 支持，支持范围改为 Vite 7 / 8。
-- Node.js 最低要求改为 `^20.19.0 || >=22.12.0`；Astro 7 另要求 Node.js 22.12+。
-- 任一已启用输出生成或校验失败时，Vite、Astro 和 CLI 都会让整个构建失败，不再保留“部分成功”结果。
-- 公开配置名、默认开关和现有输出文件名保持不变；三个 `stability*` 选项仅保留为弃用占位。
-
-### 完整功能
-
-```js
-geo({
-  domain: 'https://example.com',
-  prettyUrls: true,
-  generateFeed: true,
-  generateHumans: true,
-  llmsFull: true,
-})
-```
-
-### 兼容旧写法
-
-旧版本文档中的命名导出仍然可用：
+默认导出和现有命名导出均可使用：
 
 ```js
-import { createGeoGeneratorPlugin } from 'vite-plugin-geo';
+import geo, { createGeoGeneratorPlugin } from 'vite-plugin-geo';
 ```
-
-新项目建议使用默认导出的 `geo()`。

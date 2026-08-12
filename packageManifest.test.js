@@ -28,7 +28,7 @@ describe('vite-plugin-geo publish manifest', () => {
   it('points npm entry fields at package-root runtime files and whitelists only publishable paths', () => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
 
-    expect(manifest.version).toBe('0.1.3');
+    expect(manifest.version).toBe('0.1.4');
     expect(manifest).toMatchObject({
       name: 'vite-plugin-geo',
       main: './index.js',
@@ -73,6 +73,13 @@ describe('vite-plugin-geo publish manifest', () => {
       },
     });
     expect(manifest.engines.node).toBe('^20.19.0 || >=22.12.0');
+    expect(manifest.devDependencies.ajv).toBe('8.20.0');
+    expect(manifest.devDependencies['ajv-formats']).toBe('3.0.1');
+    expect(manifest.devDependencies).not.toHaveProperty('yaml');
+    expect(manifest.overrides).toEqual({
+      'js-yaml': '4.3.1',
+      nanoid: '3.3.17',
+    });
     expect(manifest.repository).toEqual({
       type: 'git',
       url: 'https://github.com/maxlee/vite-plugin-geo.git',
@@ -125,6 +132,7 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(packedFiles).toEqual(expectedPackedFiles);
 
     expect(packedFiles).not.toContain('DEV.md');
+    expect(packedFiles).not.toContain('STANDARDS.md');
     expect(packedFiles).not.toContain('.npmignore');
     expect(packedFiles).not.toContain('scripts/build-package.mjs');
     expect(packedFiles).not.toContain('bun.lock');
@@ -134,15 +142,53 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(packedFiles.some((path) => path.startsWith('dist/'))).toBe(false);
   });
 
-  it('documents the reviewed release checks and explicit publish approval', () => {
+  it('uses README as the complete user-facing standards and release guide', () => {
     const readme = readFileSync(join(packageDir, 'README.md'), 'utf-8');
     const developmentGuide = readFileSync(join(packageDir, 'DEV.md'), 'utf-8');
 
-    expect(readme).toContain('当前版本：`vite-plugin-geo@0.1.3`');
+    expect(readme).toMatch(/^# 🌍 vite-plugin-geo/m);
+    expect(readme).toContain('## ✨ 核心特性');
+    expect(readme).toContain('## 📦 安装');
+    expect(readme).toContain('## 🚀 快速开始');
+    expect(readme).toContain('## 📄 输出文件');
+    expect(readme).toContain('## ⚙️ 配置项');
+    expect(readme).toContain('<details>');
+    expect(readme).toContain('## 🔧 CLI 命令');
+    expect(readme).toContain('## 📝 行为契约');
+    expect(readme).toContain('## 💡 常见配置');
+    expect(readme).toContain('当前版本：`vite-plugin-geo@0.1.4`');
+    expect(readme).toContain('审核日期：2026-08-12');
+    expect(readme).toContain('llms.txt v2');
+    expect(readme).toContain('社区开放提案，不是 IETF/W3C 标准');
+    expect(readme).toContain('https://llmstxt.org/changes.html');
+    expect(readme).toContain('https://www.rfc-editor.org/rfc/rfc9309');
+    expect(readme).toContain('https://www.sitemaps.org/protocol.html');
+    expect(readme).toContain('https://www.rssboard.org/rss-specification');
+    expect(readme).toContain('https://humanstxt.org/Standard.html');
+    expect(readme).toContain('https://sku.md/spec/1.0.0-beta/sku-md-spec.md');
+    expect(readme).toContain('## 🔭 已审核但不生成');
+    expect(readme).toContain('IETF AIPREF');
+    expect(readme).toContain('Cloudflare Content Signals');
+    expect(readme).toContain('W3C TDM Reservation Protocol');
+    expect(readme).toContain('`ai.txt`');
+    expect(readme).toContain('Shopify `agents.md`');
+    expect(readme).toContain('WebMCP Draft Community Group Report');
+    expect(readme).not.toContain('STANDARDS.md');
     expect(readme).toContain('可选 Astro peer');
+    expect(developmentGuide).not.toContain('STANDARDS.md');
     expect(developmentGuide).toContain('bun run verify:registry-metadata');
     expect(developmentGuide).toContain('bun run verify:consumers');
     expect(developmentGuide).toContain('再次取得明确批准');
+  });
+
+  it('publishes only the v0.1.4 public option surface', () => {
+    const declarations = readFileSync(join(packageDir, 'index.d.ts'), 'utf-8');
+
+    expect(declarations).toContain("export type LastmodStrategy = 'none' | 'file-mtime' | 'build' | 'git'");
+    expect(declarations).toContain("export type LlmsMdMirrorStyle = 'append' | 'replace'");
+    expect(declarations).toContain('generateRobots?: boolean');
+    expect(declarations).toContain('catalog: Array<{');
+    expect(declarations).not.toMatch(/llmsFull|llmsCtx|blockGoogleExtended|stabilityWaitMs|catalogUrl|contentLanguage|market/);
   });
 
   it('exposes the default geo factory and compatibility named exports', () => {

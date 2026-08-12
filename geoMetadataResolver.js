@@ -36,7 +36,17 @@ export function normalizeSiteDomain(domain, sourceLabel = 'domain') {
     throw new Error(`${sourceLabel} must be an absolute http:// or https:// URL.`);
   }
 
-  return trimmedDomain.replace(/\/+$/, '');
+  if (
+    parsedUrl.username
+    || parsedUrl.password
+    || parsedUrl.search
+    || parsedUrl.hash
+    || (parsedUrl.pathname && parsedUrl.pathname !== '/')
+  ) {
+    throw new Error(`${sourceLabel} must be an origin-only URL without credentials, a path, query, or fragment.`);
+  }
+
+  return parsedUrl.origin;
 }
 
 function readPackageJsonDomain(packageJsonPath) {

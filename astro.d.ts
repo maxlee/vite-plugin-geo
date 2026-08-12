@@ -3,7 +3,7 @@ import type { GeoGeneratorOptions } from './index.js';
 
 export type AstroGeoOptions = Omit<
   GeoGeneratorOptions,
-  'distDir' | 'stabilityWaitMs' | 'stabilityPollIntervalMs' | 'stabilityRounds'
+  'distDir'
 >;
 
 export function createAstroGeoIntegration(options?: AstroGeoOptions): AstroIntegration;

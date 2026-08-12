@@ -20,19 +20,17 @@ Options:
   --package-json-path <path>   package.json path (default: ./package.json)
   --strip-path-prefixes <list> Comma-separated prefixes (default: src/pages/)
   --exclude-patterns <list>    Comma-separated glob patterns
-  --lastmod-strategy <value>   file-mtime | build | git (default: file-mtime)
+  --lastmod-strategy <value>   none | file-mtime | build | git (default: none)
+  --llms-md-mirror-style <value> append | replace (default: append)
   --robots-directives <list>   Comma-separated robots directives
   --sitemap-url <path-or-url>  Public sitemap URL/path used by robots.txt and llms.txt
   --pretty-urls / --no-pretty-urls
   --sitemap-index / --no-sitemap-index
   --generate-sitemap / --no-generate-sitemap
+  --generate-robots / --no-generate-robots
   --llms-md-mirror / --no-llms-md-mirror
-  --llms-full / --no-llms-full
-  --llms-ctx / --no-llms-ctx
-  --llms-ctx-full / --no-llms-ctx-full
   --generate-humans / --no-generate-humans
   --generate-feed / --no-generate-feed
-  --block-google-extended / --no-block-google-extended
   --debug / --no-debug
   --config <path>              JSON config file path
   -h, --help                   Show help
@@ -92,6 +90,7 @@ const CLI_ARG_DEFS = [
   { flag: '--source-html-dir', key: 'sourceHtmlDir' },
   { flag: '--package-json-path', key: 'packageJsonPath' },
   { flag: '--lastmod-strategy', key: 'lastmodStrategy' },
+  { flag: '--llms-md-mirror-style', key: 'llmsMdMirrorStyle' },
   { flag: '--sitemap-url', key: 'sitemapUrl' },
   // List arguments (comma-separated)
   { flag: '--strip-path-prefixes', key: 'stripPathPrefixes', parse: parseListValue },
@@ -101,25 +100,19 @@ const CLI_ARG_DEFS = [
   { flag: '--pretty-urls', key: 'prettyUrls', value: true },
   { flag: '--sitemap-index', key: 'sitemapIndex', value: true },
   { flag: '--generate-sitemap', key: 'generateSitemap', value: true },
+  { flag: '--generate-robots', key: 'generateRobots', value: true },
   { flag: '--llms-md-mirror', key: 'llmsMdMirror', value: true },
-  { flag: '--llms-full', key: 'llmsFull', value: true },
-  { flag: '--llms-ctx', key: 'llmsCtx', value: true },
-  { flag: '--llms-ctx-full', key: 'llmsCtxFull', value: true },
   { flag: '--generate-humans', key: 'generateHumans', value: true },
   { flag: '--generate-feed', key: 'generateFeed', value: true },
-  { flag: '--block-google-extended', key: 'blockGoogleExtended', value: true },
   { flag: '--debug', key: 'debug', value: true },
   // Boolean flags (negative)
   { flag: '--no-pretty-urls', key: 'prettyUrls', value: false },
   { flag: '--no-sitemap-index', key: 'sitemapIndex', value: false },
   { flag: '--no-generate-sitemap', key: 'generateSitemap', value: false },
+  { flag: '--no-generate-robots', key: 'generateRobots', value: false },
   { flag: '--no-llms-md-mirror', key: 'llmsMdMirror', value: false },
-  { flag: '--no-llms-full', key: 'llmsFull', value: false },
-  { flag: '--no-llms-ctx', key: 'llmsCtx', value: false },
-  { flag: '--no-llms-ctx-full', key: 'llmsCtxFull', value: false },
   { flag: '--no-generate-humans', key: 'generateHumans', value: false },
   { flag: '--no-generate-feed', key: 'generateFeed', value: false },
-  { flag: '--no-block-google-extended', key: 'blockGoogleExtended', value: false },
   { flag: '--no-debug', key: 'debug', value: false },
 ];
 
@@ -150,20 +143,16 @@ export function parseCliArgs(argv = []) {
       options.llmsMdMirror = parseBooleanValue(arg.split('=')[1], '--llms-md-mirror');
       continue;
     }
-    if (arg === '--llms-ctx=false' || arg === '--llms-ctx=true') {
-      options.llmsCtx = parseBooleanValue(arg.split('=')[1], '--llms-ctx');
-      continue;
-    }
-    if (arg === '--llms-ctx-full=false' || arg === '--llms-ctx-full=true') {
-      options.llmsCtxFull = parseBooleanValue(arg.split('=')[1], '--llms-ctx-full');
-      continue;
-    }
     if (arg === '--generate-feed=false' || arg === '--generate-feed=true') {
       options.generateFeed = parseBooleanValue(arg.split('=')[1], '--generate-feed');
       continue;
     }
     if (arg === '--generate-sitemap=false' || arg === '--generate-sitemap=true') {
       options.generateSitemap = parseBooleanValue(arg.split('=')[1], '--generate-sitemap');
+      continue;
+    }
+    if (arg === '--generate-robots=false' || arg === '--generate-robots=true') {
+      options.generateRobots = parseBooleanValue(arg.split('=')[1], '--generate-robots');
       continue;
     }
 
@@ -241,7 +230,7 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
   const generatedFiles = plan.files.map(({ filename }) => filename);
   generatedFiles.forEach((filename) => logger.log(`✅ Generated ${filename}`));
   if (plan.htmlUpdates.length > 0) {
-    logger.log(`✅ Injected RSS link into ${plan.htmlUpdates.length} HTML file(s)`);
+    logger.log(`✅ Injected discovery metadata into ${plan.htmlUpdates.length} HTML file(s)`);
   }
   logger.log(`\n🎉 GEO generation complete. ${generatedFiles.length} file(s) updated.`);
   return {

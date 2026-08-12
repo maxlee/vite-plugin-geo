@@ -40,9 +40,11 @@ describe('real Vite builds', () => {
       logLevel: 'silent',
       plugins: [createGeoGeneratorPlugin({
         packageJsonPath: join(root, 'package.json'),
+        lastmodStrategy: 'git',
         skuMd: {
           merchantName: 'Real Store',
-          catalogUrl: 'https://example.com/catalog',
+          summary: 'Real storefront catalog.',
+          catalog: [{ label: 'Catalog', url: 'https://example.com/catalog' }],
         },
       })],
       build: {
@@ -57,5 +59,6 @@ describe('real Vite builds', () => {
     expect(existsSync(join(distDir, 'llms.txt'))).toBe(true);
     expect(existsSync(join(distDir, 'index.html.md'))).toBe(true);
     expect(existsSync(join(distDir, 'sku.md'))).toBe(true);
+    expect(readFileSync(join(distDir, 'sitemap.xml'), 'utf-8')).not.toContain('<lastmod>');
   }, 20_000);
 });

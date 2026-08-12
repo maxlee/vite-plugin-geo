@@ -56,23 +56,23 @@ describe('Core Functionality Tests', () => {
       expect(result).toBe(buildDate);
     });
 
-    it('should fallback to build date when file does not exist', () => {
+    it('should omit file mtime when the file does not exist', () => {
       const nonExistentFile = join(testDir, 'nonexistent.html');
       const buildDate = '2026-01-01T00:00:00.000Z';
 
       const result = extractLastmod(nonExistentFile, 'file-mtime', buildDate);
 
-      expect(result).toBe(buildDate);
+      expect(result).toBeNull();
     });
 
-    it('should use file-mtime as default strategy', () => {
+    it('should omit lastmod by default', () => {
       const testFile = join(testDir, 'test.html');
       writeFileSync(testFile, '<html></html>');
 
       const buildDate = '2026-01-01T00:00:00.000Z';
       const result = extractLastmod(testFile, undefined, buildDate);
 
-      expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(result).toBeNull();
     });
   });
 
@@ -135,7 +135,7 @@ describe('Core Functionality Tests', () => {
 
       const buildDate = '2026-01-01T00:00:00.000Z';
       const lastmod = extractLastmod(missingDistHtmlFile, 'file-mtime', buildDate);
-      expect(lastmod).toBe(buildDate);
+      expect(lastmod).toBeNull();
     });
   });
 

@@ -1,6 +1,7 @@
 import type { Plugin } from 'vite';
 
-export type LastmodStrategy = 'file-mtime' | 'build' | 'git';
+export type LastmodStrategy = 'none' | 'file-mtime' | 'build' | 'git';
+export type LlmsMdMirrorStyle = 'append' | 'replace';
 
 export interface LlmsPageInfo {
   filePath: string;
@@ -13,10 +14,12 @@ export interface LlmsPageInfo {
 }
 
 export interface SkuMdOptions {
-  merchantName: string;
-  catalogUrl: string;
-  contentLanguage?: string;
-  market?: string;
+  merchantName?: string;
+  summary?: string;
+  catalog: Array<{
+    label: string;
+    url: string;
+  }>;
 }
 
 export interface GeoGeneratorOptions {
@@ -25,12 +28,6 @@ export interface GeoGeneratorOptions {
   routeBasePath?: string;
   stripPathPrefixes?: string[];
   sourceHtmlDir?: string;
-  /** @deprecated Accepted for compatibility; Vite generation no longer polls the output directory. */
-  stabilityWaitMs?: number;
-  /** @deprecated Accepted for compatibility; Vite generation no longer polls the output directory. */
-  stabilityPollIntervalMs?: number;
-  /** @deprecated Accepted for compatibility; Vite generation no longer polls the output directory. */
-  stabilityRounds?: number;
   packageJsonPath?: string | false;
   prettyUrls?: boolean;
   lastmodStrategy?: LastmodStrategy;
@@ -41,14 +38,12 @@ export interface GeoGeneratorOptions {
   generateSitemap?: boolean;
   sitemapUrl?: string;
   llmsMdMirror?: boolean;
-  llmsFull?: boolean;
-  llmsCtx?: boolean;
-  llmsCtxFull?: boolean;
+  llmsMdMirrorStyle?: LlmsMdMirrorStyle;
   llmsSections?: Record<string, string | string[]>;
   llmsClassify?: (page: LlmsPageInfo) => string | null | undefined;
   generateFeed?: boolean;
   generateHumans?: boolean;
-  blockGoogleExtended?: boolean;
+  generateRobots?: boolean;
   robotsDirectives?: string[];
   skuMd?: SkuMdOptions;
   debug?: boolean;
