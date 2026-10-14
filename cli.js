@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { logGeoAudit } from './geoAudit.js';
+
 import { readFileSync, realpathSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -31,6 +33,7 @@ Options:
   --llms-md-mirror / --no-llms-md-mirror
   --generate-humans / --no-generate-humans
   --generate-feed / --no-generate-feed
+  --audit / --no-audit        Build diagnostics (default: enabled; never fails on findings)
   --debug / --no-debug
   --config <path>              JSON config file path
   -h, --help                   Show help
@@ -104,6 +107,7 @@ const CLI_ARG_DEFS = [
   { flag: '--llms-md-mirror', key: 'llmsMdMirror', value: true },
   { flag: '--generate-humans', key: 'generateHumans', value: true },
   { flag: '--generate-feed', key: 'generateFeed', value: true },
+  { flag: '--audit', key: 'audit', value: true },
   { flag: '--debug', key: 'debug', value: true },
   // Boolean flags (negative)
   { flag: '--no-pretty-urls', key: 'prettyUrls', value: false },
@@ -113,6 +117,7 @@ const CLI_ARG_DEFS = [
   { flag: '--no-llms-md-mirror', key: 'llmsMdMirror', value: false },
   { flag: '--no-generate-humans', key: 'generateHumans', value: false },
   { flag: '--no-generate-feed', key: 'generateFeed', value: false },
+  { flag: '--no-audit', key: 'audit', value: false },
   { flag: '--no-debug', key: 'debug', value: false },
 ];
 
@@ -134,6 +139,13 @@ export function parseCliArgs(argv = []) {
       continue;
     }
 
+    if (arg.startsWith('--audit=')) {
+      options.audit = parseBooleanValue(arg.slice('--audit='.length), '--audit');
+      continue;
+    }
+    if (arg.startsWith('--no-audit=')) {
+      throw new Error('--no-audit does not accept a value. Use --audit=true|false.');
+    }
     // Handle special =false/=true cases
     if (arg === '--package-json-path=false') {
       options.packageJsonPath = false;
@@ -216,6 +228,8 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
         : resolvePathFromCwd(cwd, options.packageJsonPath || './package.json'),
     },
   });
+
+  logGeoAudit(plan.report.audit, logger);
 
   if (plan.report.totalHtmlFiles === 0) {
     logger.warn('⚠️  No HTML files found in dist directory');

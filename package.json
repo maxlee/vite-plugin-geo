@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-geo",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "$schema": "https://raw.githubusercontent.com/vitejs/vite-plugin-registry/refs/heads/main/data/schema/extended-package-json.schema.json",
   "description": "Vite plugin to generate sitemap.xml, llms.txt, robots.txt, and optional GEO companion files.",
   "type": "module",
@@ -30,6 +30,7 @@
     "cli.js",
     "viteGeoGeneratorPlugin.js",
     "geoBuildPipeline.js",
+    "geoAudit.js",
     "astroSitemapCompatibility.js",
     "geoGenerator.js",
     "geoMetadataResolver.js"
@@ -87,13 +88,13 @@
     "@astrojs/sitemap": "3.7.3",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "astro": "7.2.1",
+    "astro": "7.2.8",
     "vite7": "npm:vite@7.3.6",
-    "vite8": "npm:vite@8.1.5"
+    "vite8": "npm:vite@8.2.1"
   },
   "overrides": {
-    "js-yaml": "4.3.1",
-    "nanoid": "3.3.17"
+    "js-yaml": "4.3.2",
+    "nanoid": "3.3.18"
   },
   "publishConfig": {
     "access": "public"

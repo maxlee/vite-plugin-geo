@@ -46,6 +46,7 @@ export interface GeoGeneratorOptions {
   generateRobots?: boolean;
   robotsDirectives?: string[];
   skuMd?: SkuMdOptions;
+  audit?: boolean;
   debug?: boolean;
 }
 

@@ -1,3 +1,4 @@
+import { logGeoAudit } from './geoAudit.js';
 import { fileURLToPath } from 'url';
 import { findHtmlFiles } from './geoGenerator.js';
 import { runSeoCliGenerate } from './cli.js';
@@ -54,6 +55,7 @@ export function createAstroGeoIntegration(options = {}) {
         const distDir = fileURLToPath(dir);
 
         if (buildOutput === 'server' && findHtmlFiles(distDir).length === 0) {
+          if (options.audit !== false) logGeoAudit({ checkedPages: 0, diagnostics: [] }, createAstroLogger(logger));
           logger.warn('Astro server output contains no final static HTML, so GEO files were not generated.');
           return;
         }

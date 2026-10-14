@@ -17,6 +17,9 @@ import {
 
 const EXPECTED_DOMAIN = 'https://example.test/';
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const expectedPluginVersion = JSON.parse(
+  await readFile(join(repositoryRoot, 'package.json'), 'utf-8'),
+).version;
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -108,7 +111,7 @@ async function verifyViteRelease(root, tarballPath, viteVersion) {
 
   const installedVite = await readInstalledVersion(root, 'vite');
   const installedGeo = await readInstalledVersion(root, 'vite-plugin-geo');
-  if (installedVite !== viteVersion || installedGeo !== '0.1.4') {
+  if (installedVite !== viteVersion || installedGeo !== expectedPluginVersion) {
     throw new Error(
       `Unexpected Vite fixture versions: vite=${installedVite}, geo=${installedGeo}`,
     );
@@ -152,7 +155,7 @@ async function verifyAstroRelease(root, tarballPath, astroVersion) {
   if (
     installedAstro !== astroVersion
     || installedVite !== viteVersion
-    || installedGeo !== '0.1.4'
+    || installedGeo !== expectedPluginVersion
   ) {
     throw new Error(
       `Unexpected Astro fixture versions: astro=${installedAstro}, vite=${installedVite}, geo=${installedGeo}`,

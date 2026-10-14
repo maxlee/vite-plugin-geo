@@ -7,6 +7,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, basename, resolve } from 'path';
 import { parse, serialize } from 'parse5';
 import TurndownService from 'turndown';
+import { collectAuditFacts } from './geoAudit.js';
 
 const DEFAULT_STRIP_PATH_PREFIXES = ['src/pages/'];
 const DEFAULT_EXCLUDE_PATTERNS = ['404.html', '500.html'];
@@ -549,7 +550,7 @@ export function convertHtmlToMarkdown(htmlContent) {
   }
 }
 
-export function analyzeHtmlPage(htmlContent) {
+export function analyzeHtmlPage(htmlContent, { audit = false } = {}) {
   const source = String(htmlContent || '');
   const documentAst = parse(source);
   const titleNode = findFirstNodeByTagName(documentAst, 'title');
@@ -569,6 +570,7 @@ export function analyzeHtmlPage(htmlContent) {
     description: getAttribute(descriptionNode, 'content').trim(),
     lang: getAttribute(htmlNode, 'lang').trim(),
     noindex,
+    ...(audit ? { audit: collectAuditFacts(documentAst) } : {}),
     markdown: convertHtmlAstToMarkdown(documentAst),
   };
 }
@@ -629,13 +631,16 @@ export function resolveMarkdownMirrorPath(relativePath, style = 'append') {
  * @param {string} links.pageUrl - Absolute public page URL
  * @returns {string} Updated HTML source
  */
-export function injectLlmsDiscoveryLinks(htmlContent, { markdownUrl, llmsUrl, pageUrl }) {
+export function injectLlmsDiscoveryLinks(htmlContent, { markdownUrl, llmsUrl, pageUrl, onInspect, inspectionFacts }) {
   const source = String(htmlContent || '');
-  if (!/<\/head>/i.test(source)) {
+  const canInsert = /<\/head>/i.test(source);
+  if (!canInsert && inspectionFacts) {
+    onInspect?.(null, [], inspectionFacts);
     return source;
   }
+  if (!canInsert && !onInspect) return source;
 
-  const documentAst = parse(source);
+  const documentAst = parse(source, { sourceCodeLocationInfo: Boolean(onInspect) });
   const links = findNodesByTagName(documentAst, 'link');
   const hasMarkdownAlternate = links.some((link) => {
     const relTokens = getAttribute(link, 'rel').toLowerCase().split(/\s+/).filter(Boolean);
@@ -653,17 +658,30 @@ export function injectLlmsDiscoveryLinks(htmlContent, { markdownUrl, llmsUrl, pa
   });
 
   const additions = [];
-  if (markdownUrl && !hasMarkdownAlternate) {
+  const addedLinks = [];
+  if (canInsert && markdownUrl && !hasMarkdownAlternate) {
+    addedLinks.push({ rel: 'alternate', type: 'text/markdown', href: markdownUrl, hreflang: '' });
     additions.push(`<link rel="alternate" type="text/markdown" href="${markdownUrl}" />`);
   }
-  if (!hasLlmsDescription) {
+  if (canInsert && !hasLlmsDescription) {
+    addedLinks.push({ rel: 'describedby', type: 'text/markdown', href: llmsUrl, hreflang: '' });
     additions.push(`<link rel="describedby" type="text/markdown" href="${llmsUrl}" />`);
   }
-  if (additions.length === 0) {
-    return source;
+  const updated = additions.length === 0
+    ? source
+    : source.replace(/<\/head>/i, `${additions.join('')}</head>`);
+  if (onInspect) {
+    // Literal closing tags inside comments/scripts do not create real head links.
+    const headEnd = findFirstNodeByTagName(documentAst, 'head')?.sourceCodeLocation?.endTag?.startOffset;
+    if (headEnd === undefined && additions.length > 0) {
+      // An implicit head has no source location. Inspect the changed HTML rather
+      // than guessing where its new links landed; ordinary pages reuse the AST.
+      onInspect(parse(updated), []);
+    } else {
+      onInspect(documentAst, headEnd === source.search(/<\/head>/i) ? addedLinks : []);
+    }
   }
-
-  return source.replace(/<\/head>/i, `${additions.join('')}</head>`);
+  return updated;
 }
 
 function getHtmlCandidateScore(relativePath, options = {}) {

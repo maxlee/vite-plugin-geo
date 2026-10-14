@@ -134,6 +134,7 @@ describe('Astro integration', () => {
     const { messages } = await runIntegration({}, { site: undefined }, 'server');
 
     expect(messages).toEqual([
+      expect.stringMatching(/^info:.*GEO audit.*未检查/),
       expect.stringMatching(/^warn:.*server output.*no final static HTML/i),
     ]);
   });

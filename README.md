@@ -2,7 +2,7 @@
 
 一个面向 Vite 与 Astro 静态站点的构建后插件，自动生成 Sitemap、robots.txt、RSS、llms.txt 和页面 Markdown 镜像。
 
-当前版本：`vite-plugin-geo@0.1.4`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Astro 7 是可选 Astro peer，纯 Vite 项目无需安装 Astro。
+当前版本：`vite-plugin-geo@0.1.5`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Astro 7 是可选 Astro peer，纯 Vite 项目无需安装 Astro。
 
 > 这些文件用于机器发现和抓取提示，不证明任何搜索引擎、AI 产品或模型会读取、采用、索引或优先展示内容，也不承诺排名、收录或转化效果。
 
@@ -16,6 +16,7 @@
 - 🌐 **多语言支持** — Sitemap hreflang 映射
 - 👥 **humans.txt** — 可选生成，只输出可确认信息
 - 🛍️ **SKU.md** — 可选生成 `1.0.0-beta` 纯 Markdown 根清单
+- 🔎 **构建诊断** — 默认在终端提示静态页面问题与改进建议，不因诊断发现中断构建
 - 🧱 **统一行为** — Vite、Astro 和 CLI 共用同一套校验、规划与写入规则
 
 ## 📦 安装
@@ -137,6 +138,7 @@ dist/
 | `generateFeed` | `boolean` | `true` | RSS 订阅源开关 |
 | `generateHumans` | `boolean` | `false` | humans.txt 开关 |
 | `skuMd` | `SkuMdOptions` | — | SKU.md 根清单配置 |
+| `audit` | `boolean` | `true` | 构建诊断；关闭后跳过额外检查 |
 | `debug` | `boolean` | `false` | 输出生成摘要 |
 
 <details>
@@ -235,12 +237,57 @@ Astro 构建串联请参阅上方“[Astro 项目](#astro-项目)”中的“方
 | `--llms-md-mirror / --no-llms-md-mirror` | Markdown 镜像开关 |
 | `--generate-feed / --no-generate-feed` | RSS 开关 |
 | `--generate-humans / --no-generate-humans` | humans.txt 开关 |
+| `--audit / --no-audit` | 构建诊断开关，默认开启；也支持 `--audit=true` / `--audit=false` |
 | `--debug / --no-debug` | 调试摘要开关 |
 | `--config <path>` | JSON 配置文件路径 |
 
 被删除的旧参数会以 unknown argument 失败。
 
 </details>
+
+## 🔎 构建诊断（0.1.5）
+
+Vite、Astro 和 CLI 默认开启 `audit: true`。警告与建议直接显示在构建终端，无需开启 `debug`；每项包含页面路径、规则、发现依据和处理建议，按页面路径和规则稳定排序，完整列出发现项。诊断不新增报告文件，不自动修改页面，也不改变现有文件生成默认值。诊断发现不会使构建失败；原有配置错误、文件冲突和读写失败仍按原有规则处理。
+
+| 检查项 | 提示内容与边界 |
+|---|---|
+| 标题 | 缺少、空标题、多个标题，以及纳入页面之间重复的标题 |
+| 页面描述 | 缺少、空描述或重复描述时给出建议 |
+| 页面语言 | `<html lang>` 缺失或语言标签无法识别 |
+| 主标题 | H1 缺少或多个时给出内容结构建议，不据此断言排名影响 |
+| canonical | 无效地址、互相冲突的声明给出警告；缺失、相对地址、跨域地址给出建议，后两种可能是合法配置 |
+| JSON-LD | 只检查 JSON 语法，接受数组与 `@graph`；不验证 Schema.org 语义或富媒体搜索资格 |
+| 图片 | 缺少 `alt` 属性；允许装饰图片使用 `alt=""` |
+| 首页元数据 | 提醒站点元数据使用了回退值，便于核对标题和描述 |
+| 本地引用 | 检查链接、canonical、hreflang 是否指向已知 `noindex` 页面；本地目标缺失时提示“构建产物中未找到，需确认线上路由” |
+| 生成文件与发现链接 | 检查本次生成计划中的引用，以及页面中的 Markdown、llms.txt、RSS 发现链接是否一致 |
+
+基础检查只针对纳入本次生成的页面。引用检查会利用扫描中已知的 `noindex` 页面，但不会对被排除页面进行完整内容诊断。相对地址会结合页面 `<base href>` 和公开路径作用域解析；没有找到静态文件不等于线上 404，动态路由、重写与重定向需在部署环境确认。
+
+canonical 的处理依据 [Google canonical 指南](https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls)：推荐绝对地址，但相对地址可以解析；跨域 canonical 也可能有合理用途。诊断只提示核对，不把它们一概判为错误。
+
+此功能不发送 HTTP 请求，不验证线上状态码、响应头、CDN 或防火墙，不完整审计第三方 Sitemap/XML，不模拟 robots 匹配引擎，也不检查跨站 hreflang 回链。
+
+终端示例（同页缺少 `alt` 的图片合并计数）：
+
+```text
+[GEO audit] 已检查 1 个页面；0 项警告，1 项建议。仅检查构建产物；第三方 sitemap、robots 规则和线上状态未验证。
+[GEO audit] [建议] index.html [image-alt-missing] 1 张图片缺少 alt 属性；提供图片说明；装饰图片可使用空 alt。
+```
+
+本地目标查找忽略查询参数和片段；canonical 声明自身的比较保留这些信息，避免将不同查询页面误当成同一首选地址。
+
+关闭诊断：
+
+```js
+geo({ domain: 'https://example.com', audit: false })
+```
+
+```bash
+vite-plugin-geo generate --no-audit
+# 等价写法
+vite-plugin-geo generate --audit=false
+```
 
 ## 📝 行为契约
 
@@ -303,7 +350,9 @@ llms.txt v2 是 2026-08-10 更新的社区提案，不是正式 Web 标准。v0.
 - robots.txt 是抓取提示，不是授权或安全机制，敏感资源仍需身份验证和服务端访问控制；
 - 页面过滤读取最终 HTML 中的 robots meta `noindex`；部署后添加的 `X-Robots-Tag` 无法在构建期识别。
 
-OpenAI 将 OAI-SearchBot 用于搜索，GPTBot 用于可能进入基础模型训练的抓取，ChatGPT-User 用于用户触发的访问。三者用途及 robots.txt 适用方式不同；插件不内置厂商快捷开关，请用通用 `robotsDirectives` 分别配置。
+OpenAI 将 OAI-SearchBot 用于搜索，GPTBot 用于可能进入基础模型训练的抓取，ChatGPT-User 用于用户触发的访问。允许搜索抓取与允许训练抓取是独立选择；用户触发的 ChatGPT-User 访问不属于自动抓取，其访问未必适用 robots.txt。插件不内置厂商快捷开关，请用通用 `robotsDirectives` 分别配置。
+
+robots.txt 表达抓取规则，`noindex` 表达索引意图；抓取被阻止时，机器人可能无法读取页面中的 `noindex`。CDN/WAF、登录和服务器限制决定请求实际能否到达，即使 robots.txt 允许也不代表可访问。构建诊断无法确认这些线上条件。llms.txt、Markdown 镜像和结构化数据也不保证 AI 引用或搜索排名。
 
 ### 📰 RSS Link 与时间
 
@@ -398,6 +447,15 @@ geo({
 | [WebMCP Draft Community Group Report](https://webmachinelearning.github.io/webmcp/) | 浏览器运行时工具 API，不是静态规范文件，也不是 W3C 标准或标准轨道文档 |
 
 v0.1.4 不会生成以上文件，也不会把它们映射成 robots.txt 或 llms.txt 的别名。
+
+## 🆕 0.1.5 发布说明
+
+- 新增默认开启的静态构建诊断，Vite、Astro 与 CLI 使用相同规则；
+- 唯一新增公共选项为 `audit?: boolean`，默认 `true`，支持 CLI `--audit`、`--no-audit`、`--audit=true|false`；
+- 终端完整显示警告和建议，包含路径、规则、依据与建议，无需 `debug`；诊断发现不会使构建失败；
+- 关闭诊断会跳过额外检查；不自动修复、不生成 JSON 报告、不改变输出默认值；
+- 消费者安装验证从本包清单读取预期版本，避免版本升级遗漏校验脚本；
+- 更新开发工具链的安全修复版本及锁文件，运行时依赖保持不变。
 
 ## 🆕 0.1.4 发布说明
 

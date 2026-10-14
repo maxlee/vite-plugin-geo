@@ -1,3 +1,4 @@
+import { logGeoAudit } from './geoAudit.js';
 import { readFileSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
 import {
@@ -90,6 +91,7 @@ export function createGeoGeneratorPlugin(options = {}) {
         const projectRoot = resolvedConfig?.root || process.cwd();
 
         if (htmlAssets.length === 0) {
+          if (options.audit !== false) logGeoAudit({ checkedPages: 0, diagnostics: [] }, console);
           if (isAstroProject(projectRoot) && !astroUsageWarningShown) {
             console.warn("⚠️  Astro generates HTML after Vite finishes. Move this plugin from vite.plugins to integrations and import it from 'vite-plugin-geo/astro'.");
             astroUsageWarningShown = true;
@@ -146,6 +148,8 @@ export function createGeoGeneratorPlugin(options = {}) {
             source: content,
           });
         });
+
+        logGeoAudit(plan.report.audit, console);
 
         debug('Generated GEO assets', {
           includedHtmlFiles: plan.report.includedHtmlFiles,

@@ -55,7 +55,7 @@ afterEach(() => {
 describe('published consumer matrix', () => {
   it('pins the supported floors and the reviewed current releases', () => {
     expect(VITE_RELEASES).toEqual(['7.0.0', '8.0.0', '8.2.1']);
-    expect(ASTRO_RELEASES).toEqual(['7.0.0', '7.2.1']);
+    expect(ASTRO_RELEASES).toEqual(['7.0.0', '7.2.8']);
   });
 
   it('runs the reviewed consumer matrix in CI', () => {
@@ -66,10 +66,13 @@ describe('published consumer matrix', () => {
     expect(workflow).toContain('- run: bun run verify:consumers');
     expect(workflow).toContain('- run: bun run verify:registry-metadata');
     expect(workflow).toContain('- run: bun audit');
-    expect(readFileSync(
+    const verifier = readFileSync(
       join(process.cwd(), 'scripts', 'verify-consumer-matrix.mjs'),
       'utf-8',
-    )).toContain("installedGeo !== '0.1.4'");
+    );
+    expect(verifier).toContain('installedGeo !== expectedPluginVersion');
+    expect(verifier).toContain("await readFile(join(repositoryRoot, 'package.json'), 'utf-8')");
+    expect(verifier).not.toMatch(/installedGeo !== ['"]\d+\.\d+\.\d+['"]/);
   });
 
   it('removes the superseded packed-consumer gate', () => {

@@ -1,3 +1,4 @@
+import { auditGeoPlan, collectAuditFacts } from './geoAudit.js';
 import {
   existsSync,
   mkdirSync,
@@ -241,6 +242,7 @@ export function validateGeoOptions(options = {}) {
     'generateRobots',
     'generateSitemap',
     'debug',
+    'audit',
   ];
   booleanOptions.forEach((key) => {
     if (options[key] !== undefined && typeof options[key] !== 'boolean') {
@@ -436,7 +438,7 @@ export function generateSkuMd(options, context) {
 function createPageModels(htmlInputs, distDir, options, currentDate) {
   const dedupedInputs = dedupePageInputs(htmlInputs, options);
   return dedupedInputs.map((input) => {
-    const analyzed = analyzeHtmlPage(input.htmlContent);
+    const analyzed = analyzeHtmlPage(input.htmlContent, { audit: options.audit !== false });
     const filePath = input.filePath || resolve(distDir, input.relativePath);
     const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, options);
     const lastmodStrategy = options.lastmodStrategy || 'none';
@@ -508,6 +510,15 @@ export async function buildGeoGenerationPlan({
   };
   const allPageModels = createPageModels(htmlInputs, distDir, normalizedOptions, currentDate);
   const { included: pageModels, excluded } = filterPageModels(allPageModels, normalizedOptions);
+  (options.audit !== false ? allPageModels : pageModels).forEach((page) => {
+    page.pageUrl = composePageUrl(siteUrl, page.pagePath, routeBasePath);
+    if (options.audit !== false) {
+      page.filePageUrl = composePageUrl(siteUrl, resolvePagePath(page.relativePath, {
+        ...normalizedOptions,
+        prettyUrls: false,
+      }), routeBasePath);
+    }
+  });
   if (pageModels.length === 0) {
     return {
       files: [],
@@ -516,6 +527,7 @@ export async function buildGeoGenerationPlan({
         totalHtmlFiles: allPageModels.length,
         includedHtmlFiles: 0,
         excludedHtmlFiles: excluded.length,
+        ...(options.audit !== false ? { audit: { checkedPages: 0, diagnostics: [] } } : {}),
       },
     };
   }
@@ -533,7 +545,7 @@ export async function buildGeoGenerationPlan({
   ]));
   const llmsUrl = composePageUrl(siteUrl, 'llms.txt', routeBasePath);
   pageModels.forEach((page) => {
-    const pageUrl = composePageUrl(siteUrl, page.pagePath, routeBasePath);
+    const pageUrl = page.pageUrl;
     const mirrorRelativePath = resolveMarkdownMirrorPath(
       page.relativePath,
       normalizedOptions.llmsMdMirrorStyle,
@@ -549,7 +561,6 @@ export async function buildGeoGenerationPlan({
         `<!-- ${GENERATED_FILE_MARKER}; source: `,
       )
     );
-    page.pageUrl = pageUrl;
     page.mirrorRelativePath = mirrorRelativePath;
     page.markdownUrl = existingMarkdownUrl || generatedMarkdownUrl;
     page.hasExistingMarkdownAlternate = Boolean(existingMarkdownUrl) && !hasManagedMirror;
@@ -658,6 +669,7 @@ export async function buildGeoGenerationPlan({
   }
 
   const htmlUpdates = [];
+  const discoveryByPath = new Map();
   const feedHref = `${routeBasePath || '/'}feed.xml`.replace(/\/{2,}/g, '/');
   if (options.generateFeed !== false) {
     const feedPages = pageModels.map((page) => ({
@@ -681,6 +693,13 @@ export async function buildGeoGenerationPlan({
       markdownUrl: page.markdownUrl,
       llmsUrl,
       pageUrl: page.pageUrl,
+      // If nothing was injected, reuse the initial facts for headless documents.
+      inspectionFacts: content === page.htmlContent ? page.audit : undefined,
+      onInspect: options.audit !== false ? (documentAst, addedLinks, existingFacts) => {
+        const facts = existingFacts || collectAuditFacts(documentAst, { discoveryOnly: true });
+        facts.links.push(...addedLinks);
+        discoveryByPath.set(page.relativePath, facts);
+      } : undefined,
     });
     if (content !== page.htmlContent) {
       htmlUpdates.push({ filename: page.relativePath, content });
@@ -699,6 +718,17 @@ export async function buildGeoGenerationPlan({
       includedHtmlFiles: pageModels.length,
       excludedHtmlFiles: excluded.length,
       sitemapCompatibility,
+      ...(options.audit !== false ? { audit: auditGeoPlan({
+        allPages: allPageModels,
+        pages: pageModels,
+        homePage,
+        files,
+        existingFiles: outputAssets,
+        options: generatorOptions,
+        siteUrl,
+        sitemapGenerated: sitemapCompatibility.shouldGenerateSitemap,
+        discoveryByPath,
+      }) } : {}),
       generatedFiles: files.map(({ filename, content }) => ({
         filename,
         size: Buffer.byteLength(content, 'utf-8'),
