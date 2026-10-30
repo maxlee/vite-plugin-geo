@@ -1,8 +1,9 @@
 import { logGeoAudit } from './geoAudit.js';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
 import {
   buildGeoGenerationPlan,
+  logRobotsPreservation,
   validateGeoOptions,
 } from './geoBuildPipeline.js';
 import { isAstroProject } from './astroSitemapCompatibility.js';
@@ -33,8 +34,8 @@ function collectHtmlAssetsFromBundle(bundle) {
   ));
 }
 
-function collectOutputAssets(bundle) {
-  return Object.values(bundle || [])
+function collectOutputAssets(bundle, config) {
+  const assets = Object.values(bundle || [])
     .filter((output) => (
       output?.type === 'asset'
       && output.source !== undefined
@@ -44,6 +45,15 @@ function collectOutputAssets(bundle) {
       filename: output.fileName,
       content: String(output.source),
     }));
+  // Vite copies public files separately; they are not necessarily bundle assets.
+  if (config?.publicDir && config.build?.copyPublicDir !== false
+    && !assets.some(({ filename }) => filename === 'robots.txt')) {
+    const robotsPath = resolve(config.publicDir, 'robots.txt');
+    if (existsSync(robotsPath)) {
+      assets.push({ filename: 'robots.txt', content: readFileSync(robotsPath, 'utf-8') });
+    }
+  }
+  return assets;
 }
 
 function createDebugLogger(enabled) {
@@ -116,7 +126,7 @@ export function createGeoGeneratorPlugin(options = {}) {
             relativePath: asset.fileName,
             htmlContent: String(asset.source),
           })),
-          outputAssets: collectOutputAssets(bundle),
+          outputAssets: collectOutputAssets(bundle, resolvedConfig),
           options: {
             ...options,
             routeBasePath,
@@ -149,6 +159,7 @@ export function createGeoGeneratorPlugin(options = {}) {
           });
         });
 
+        logRobotsPreservation(plan.report.robotsCompatibility, console);
         logGeoAudit(plan.report.audit, console);
 
         debug('Generated GEO assets', {

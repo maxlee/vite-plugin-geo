@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import {
   applyGeoGenerationPlanToDisk,
   buildGeoGenerationPlanFromDisk,
+  logRobotsPreservation,
 } from './geoBuildPipeline.js';
 
 const USAGE = `
@@ -241,6 +242,7 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
   }
 
   applyGeoGenerationPlanToDisk(plan, { distDir });
+  logRobotsPreservation(plan.report.robotsCompatibility, logger);
   const generatedFiles = plan.files.map(({ filename }) => filename);
   generatedFiles.forEach((filename) => logger.log(`✅ Generated ${filename}`));
   if (plan.htmlUpdates.length > 0) {

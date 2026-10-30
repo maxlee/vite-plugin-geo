@@ -75,4 +75,37 @@ describe('real Astro builds', () => {
     expect(existsSync(join(distDir, 'robots.txt'))).toBe(true);
     expect(existsSync(join(distDir, 'feed.xml'))).toBe(true);
   }, 20_000);
+
+  it.each(['/', '/docs/'])('preserves public robots with sitemap and default geo at base %s across repeated builds', async base => {
+    const root = join(fixtureRoot, base === '/' ? 'public-robots-root' : 'public-robots-subpath');
+    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'astro.js')).href;
+    const robots = Buffer.from(`User-agent: *\nAllow: /\nSitemap: https://example.com${base}sitemap-index.xml\n`);
+    writeFixture(root, 'package.json', JSON.stringify({ name: 'astro-public-robots' }));
+    writeFixture(root, 'public/robots.txt', robots);
+    writeFixture(root, 'src/pages/index.astro', '<html lang="en"><head><title>Astro robots</title><meta name="description" content="Astro preservation"></head><body><h1>Home</h1></body></html>');
+    writeFixture(root, 'astro.config.mjs', `
+      import { defineConfig } from 'astro/config';
+      import sitemap from '@astrojs/sitemap';
+      import geo from ${JSON.stringify(astroEntryUrl)};
+      export default defineConfig({
+        site: 'https://example.com', base: ${JSON.stringify(base)},
+        integrations: [sitemap(), geo()],
+      });
+    `);
+    for (let build = 0; build < 2; build += 1) {
+      await buildAstro({ root, logLevel: 'silent' });
+      const distDir = join(root, 'dist');
+      expect(readFileSync(join(distDir, 'robots.txt'))).toEqual(robots);
+      const sitemapIndex = readdirSync(distDir).find(name => /sitemap.*index\.xml$/i.test(name));
+      expect(sitemapIndex).toBeDefined();
+      const llms = readFileSync(join(distDir, 'llms.txt'), 'utf-8');
+      expect(llms).toContain(`https://example.com${base}${sitemapIndex}`);
+      expect(llms).toContain('https://example.com/robots.txt');
+      expect(existsSync(join(distDir, 'sitemap.xml'))).toBe(false);
+      expect(existsSync(join(distDir, 'feed.xml'))).toBe(true);
+      expect(existsSync(join(distDir, 'index.html.md'))).toBe(true);
+      expect(readFileSync(join(distDir, 'index.html'), 'utf-8')).toContain('application/rss+xml');
+    }
+  }, 30_000);
+
 });

@@ -106,7 +106,7 @@ dist/
 | 文件 | 默认 | 说明 |
 |---|---:|---|
 | `sitemap.xml` | ✅ | 50,000 URL 或配置大小超限时拆分并生成索引 |
-| `robots.txt` | 根作用域 ✅ | 非根 `routeBasePath` 默认关闭，可显式开启，但始终写到站点根目录 |
+| `robots.txt` | 自动 | 默认保留已有手写文件；无文件时根作用域生成，非根作用域关闭；始终位于站点根目录 |
 | `feed.xml` | ✅ | RSS 2.0 订阅源，并向 HTML 注入 discovery link |
 | `llms.txt` | ✅ | 当前单一作用域的 llms.txt v2 内容索引 |
 | `*.html.md` / `*.md` | ✅ | 默认 append，可改为 replace 风格 |
@@ -133,7 +133,7 @@ dist/
 | `llmsMdMirrorStyle` | `'append' \| 'replace'` | `'append'` | `about.html.md` 或 `about.md` |
 | `llmsClassify` | `function` | 自动 | 自定义 llms.txt 页面分区 |
 | `llmsSections` | `Record<string, string \| string[]>` | 自动 | 按路径片段配置 llms.txt 分区 |
-| `generateRobots` | `boolean` | 按作用域 | 根作用域默认开启，非根作用域默认关闭 |
+| `generateRobots` | `boolean` | 自动 | 默认保留已有手写文件，否则按作用域生成；显式 `true` 与手写文件冲突时失败 |
 | `robotsDirectives` | `string[]` | `[]` | 通用 robots.txt 自定义指令 |
 | `generateFeed` | `boolean` | `true` | RSS 订阅源开关 |
 | `generateHumans` | `boolean` | `false` | humans.txt 开关 |
@@ -311,7 +311,7 @@ vite-plugin-geo generate --audit=false
 | `prettyUrls: false` | `about.html` | `/about.html` |
 | 首页 | `index.html` | `/`（始终） |
 
-`domain` 只表示站点源；所有子路径由 `routeBasePath` 表达。插件先规划并校验全部目标路径，再统一写入。任何配置、路径或用户文件冲突都会在写入前停止，避免留下半成品。
+`domain` 只表示站点源；所有子路径由 `routeBasePath` 表达。插件先规划并校验全部目标路径，再统一写入。配置或路径冲突，以及需要生成的目标与用户文件冲突，都会在写入前停止，避免留下半成品。默认保留已有手写 robots.txt 是例外：插件跳过该文件的生成，不触发冲突。
 
 ### 🧠 llms.txt v2
 
@@ -345,10 +345,22 @@ llms.txt v2 是 2026-08-10 更新的社区提案，不是正式 Web 标准。v0.
 实现依据：[RFC 9309](https://www.rfc-editor.org/rfc/rfc9309)、[Google robots.txt 文档](https://developers.google.com/search/docs/crawling-indexing/robots/robots_txt) 和 [OpenAI crawler 说明](https://developers.openai.com/api/docs/bots)。
 
 - robots.txt 的公开位置始终是站点源的 `/robots.txt`，不能由子路径文件代替；
-- 根作用域默认生成，非根作用域默认关闭；即使显式开启也仍写到站点根目录；
+- 默认检测构建输出中的 robots.txt：已有手写文件时逐字节保留，不合并、不添加标记、不改写 Sitemap 行；终端提示跳过生成，不依赖 `audit` 或 `debug`；
+- 没有手写文件时，根作用域默认生成，非根作用域默认关闭；已有插件标记的文件按当前配置更新，仍遵循作用域设置；
+- `generateRobots: false` 不生成也不修改已有文件；`generateRobots: true` 与手写文件冲突时，构建在写入前失败，并提示关闭生成或移除重复来源；
+- 保留文件时不会应用 `robotsDirectives`，配置了这些指令会明确提示未应用；llms.txt 仍可引用已有的 robots.txt；
+- Vite 同时检查 bundle 与实际启用的 `publicDir`；Astro 和 CLI 检查最终输出目录。即使显式开启生成，robots.txt 也仍写到站点根目录；
 - 自定义指令含控制字符或生成内容超过 500 KiB 时，构建会失败；
 - robots.txt 是抓取提示，不是授权或安全机制，敏感资源仍需身份验证和服务端访问控制；
 - 页面过滤读取最终 HTML 中的 robots meta `noindex`；部署后添加的 `X-Robots-Tag` 无法在构建期识别。
+
+Astro 可以把手写文件放在 `public/robots.txt`，并正常使用 `integrations: [sitemap(), geo()]`。插件会保留这份文件。仍在使用 0.1.4 时，可以先显式关闭生成：
+
+```js
+integrations: [sitemap(), geo({ generateRobots: false })]
+```
+
+该配置仅控制生成，不负责修正手写文件中的 Sitemap 地址。
 
 OpenAI 将 OAI-SearchBot 用于搜索，GPTBot 用于可能进入基础模型训练的抓取，ChatGPT-User 用于用户触发的访问。允许搜索抓取与允许训练抓取是独立选择；用户触发的 ChatGPT-User 访问不属于自动抓取，其访问未必适用 robots.txt。插件不内置厂商快捷开关，请用通用 `robotsDirectives` 分别配置。
 
@@ -449,6 +461,8 @@ geo({
 v0.1.4 不会生成以上文件，也不会把它们映射成 robots.txt 或 llms.txt 的别名。
 
 ## 🆕 0.1.5 发布说明
+
+- 修复已有手写 robots.txt 导致默认 Astro 构建失败：默认保留已有文件，显式生成冲突继续保护用户文件；
 
 - 新增默认开启的静态构建诊断，Vite、Astro 与 CLI 使用相同规则；
 - 唯一新增公共选项为 `audit?: boolean`，默认 `true`，支持 CLI `--audit`、`--no-audit`、`--audit=true|false`；

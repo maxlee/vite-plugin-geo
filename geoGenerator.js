@@ -1227,7 +1227,7 @@ export function generateLlmsTxt(siteMetadata, htmlFiles, distDir, options = {}) 
     if (options.includeSitemap !== false) {
       optionalLinks.push(`- [Sitemap](${composePublicFileUrl(url, options.sitemapUrl || 'sitemap.xml', options.routeBasePath)}): Complete list of all indexed pages`);
     }
-    if (options.generateRobots !== false) {
+    if (options.includeRobots ?? (options.generateRobots !== false)) {
       optionalLinks.push(`- [robots.txt](${composePageUrl(url, 'robots.txt')}): Search engine crawling instructions`);
     }
     if (optionalLinks.length > 0) {
