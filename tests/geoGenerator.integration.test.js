@@ -11,7 +11,7 @@ import {
   generateSitemap,
   generateLlmsTxt,
   generateRobotsTxt,
-} from './geoGenerator.js';
+} from '../geoGenerator.js';
 
 describe('Integration Tests - Core Functionality Workflow', () => {
   const testDir = join(process.cwd(), 'test-integration-temp');

@@ -3,10 +3,10 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { buildGeoGenerationPlanFromDisk, applyGeoGenerationPlanToDisk } from './geoBuildPipeline.js';
-import { parseCliArgs, runCli, runSeoCliGenerate } from './cli.js';
-import { createGeoGeneratorPlugin } from './viteGeoGeneratorPlugin.js';
-import astroGeo from './astro.js';
+import { buildGeoGenerationPlanFromDisk, applyGeoGenerationPlanToDisk } from '../geoBuildPipeline.js';
+import { parseCliArgs, runCli, runSeoCliGenerate } from '../cli.js';
+import { createGeoGeneratorPlugin } from '../viteGeoGeneratorPlugin.js';
+import astroGeo from '../astro.js';
 
 const roots = [];
 function fixture(pages = { 'index.html': '<html><head><title> </title></head><body><img src="x.png"><a href="/absent">Next</a></body></html>' }) {

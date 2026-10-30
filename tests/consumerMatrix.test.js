@@ -12,7 +12,7 @@ import {
   ASTRO_RELEASES,
   VITE_RELEASES,
   assertGeneratedCoreFiles,
-} from './scripts/consumer-matrix-contract.mjs';
+} from '../scripts/consumer-matrix-contract.mjs';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__consumer-matrix-contract__');
 const ignoredSourceDirectories = new Set([

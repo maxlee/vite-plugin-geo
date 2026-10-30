@@ -11,7 +11,7 @@ import {
   filterHtmlFiles,
   normalizeFilePath,
   resolvePagePath,
-} from './geoGenerator.js';
+} from '../geoGenerator.js';
 
 describe('Core Functionality Tests', () => {
   const testDir = join(process.cwd(), 'test-temp');

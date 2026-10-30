@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { dirname, join } from 'path';
 import { pathToFileURL } from 'url';
 import { build as buildAstro } from 'astro';
-import { runSeoCliGenerate } from './cli.js';
+import { runSeoCliGenerate } from '../cli.js';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__real-astro-builds__');
 

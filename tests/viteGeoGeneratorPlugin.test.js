@@ -5,9 +5,9 @@ import { pathToFileURL } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   resolveSiteMetadataFromBuildOutput,
-} from './geoMetadataResolver.js';
-import { extractPageMetadata } from './geoGenerator.js';
-import { createGeoGeneratorPlugin } from './viteGeoGeneratorPlugin.js';
+} from '../geoMetadataResolver.js';
+import { extractPageMetadata } from '../geoGenerator.js';
+import { createGeoGeneratorPlugin } from '../viteGeoGeneratorPlugin.js';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__vite-geo-plugin-fixture__');
 const pluginSourcePath = existsSync(join(process.cwd(), 'viteGeoGeneratorPlugin.js'))

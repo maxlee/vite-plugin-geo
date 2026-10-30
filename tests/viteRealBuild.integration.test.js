@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { build as buildVite7 } from 'vite7';
 import { build as buildVite8 } from 'vite8';
-import { createGeoGeneratorPlugin } from './viteGeoGeneratorPlugin.js';
+import { createGeoGeneratorPlugin } from '../viteGeoGeneratorPlugin.js';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__real-vite-builds__');
 

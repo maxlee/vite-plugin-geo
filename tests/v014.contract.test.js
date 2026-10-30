@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { join } from 'path';
-import { parseCliArgs } from './cli.js';
+import { parseCliArgs } from '../cli.js';
 import {
   applyGeoGenerationPlanToDisk,
   buildGeoGenerationPlan,
@@ -15,13 +15,13 @@ import {
   generateSkuMd,
   validateGeoOptions,
   validateSkuMdOptions,
-} from './geoBuildPipeline.js';
+} from '../geoBuildPipeline.js';
 import {
   generateFeedXml,
   generateHumansTxt,
   generateRobotsTxt,
   generateSitemap,
-} from './geoGenerator.js';
+} from '../geoGenerator.js';
 
 describe('v0.1.4 public contract', () => {
   const fixtureRoot = join(process.cwd(), 'tempfiles', '__v014-contract__');

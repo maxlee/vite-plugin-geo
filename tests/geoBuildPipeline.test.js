@@ -4,7 +4,7 @@ import { join } from 'path';
 import {
   applyGeoGenerationPlanToDisk,
   buildGeoGenerationPlanFromDisk,
-} from './geoBuildPipeline.js';
+} from '../geoBuildPipeline.js';
 
 describe('shared GEO generation pipeline', () => {
   const fixtureRoot = join(process.cwd(), 'tempfiles', '__geo-build-pipeline__');

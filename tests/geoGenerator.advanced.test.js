@@ -13,11 +13,11 @@ import {
   generateRobotsTxt,
   generateHumansTxt,
   generateFeedXml,
-} from './geoGenerator.js';
+} from '../geoGenerator.js';
 import {
   extractTeamInfoFromPackageJson,
   extractTechStackFromPackageJson,
-} from './geoMetadataResolver.js';
+} from '../geoMetadataResolver.js';
 
 describe('Phase 3 - Advanced Features Tests', () => {
   const testDir = join(process.cwd(), 'test-advanced-temp');

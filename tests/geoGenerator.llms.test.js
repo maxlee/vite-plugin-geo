@@ -4,7 +4,7 @@ import { join } from 'path';
 import {
   convertHtmlToMarkdown,
   generateLlmsTxt,
-} from './geoGenerator.js';
+} from '../geoGenerator.js';
 
 describe('llms.txt and Markdown generation', () => {
   const testDir = join(process.cwd(), 'test-llms-temp');

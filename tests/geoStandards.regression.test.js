@@ -7,11 +7,11 @@ import {
   generateRobotsTxt,
   generateSitemap,
   injectFeedLink,
-} from './geoGenerator.js';
+} from '../geoGenerator.js';
 import {
   generateSkuMd,
   validateSkuMdOptions,
-} from './geoBuildPipeline.js';
+} from '../geoBuildPipeline.js';
 
 describe('standards regression coverage', () => {
   const testDir = join(process.cwd(), 'tempfiles', '__geo-standards__');

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parse } from 'parse5';
-import { collectAuditFacts, auditGeoPlan, logGeoAudit } from './geoAudit.js';
+import { collectAuditFacts, auditGeoPlan, logGeoAudit } from '../geoAudit.js';
 
 const siteUrl = 'https://example.com';
 function page(relativePath = 'index.html', html = '', extra = {}) {

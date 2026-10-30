@@ -23,7 +23,7 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
-      - run: bun test viteRealBuild.integration.test.js
+      - run: bun test tests/viteRealBuild.integration.test.js
 
   astro:
     name: Astro 7 / Node 22.12
@@ -37,7 +37,7 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
-      - run: bun test astroRealBuild.integration.test.js
+      - run: bun test tests/astroRealBuild.integration.test.js
 
   full:
     name: Full verification
