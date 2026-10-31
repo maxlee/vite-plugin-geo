@@ -82,6 +82,57 @@ describe('lastmod resolution', () => {
     expect((sitemap.match(/<lastmod>/g) || [])).toHaveLength(1);
   });
 
+  it('honors lastmodResolver under the default none strategy', async () => {
+    const f = fixture({ 'index.html': page('Home'), 'about.html': page('About') });
+    const sitemap = sitemapOf(await planFor(f, {
+      lastmodResolver: (model) => (model.relativePath === 'index.html'
+        ? new Date('2025-05-05T00:00:00.000Z')
+        : null),
+    }));
+
+    expect(sitemap).toContain('<lastmod>2025-05-05T00:00:00.000Z</lastmod>');
+    expect((sitemap.match(/<lastmod>/g) || [])).toHaveLength(1);
+  });
+
+  it('falls through to the strategy when lastmodResolver returns undefined', async () => {
+    const f = fixture({ 'index.html': page('Home') });
+    const sitemap = sitemapOf(await planFor(f, {
+      lastmodStrategy: 'build',
+      lastmodResolver: () => undefined,
+    }));
+
+    expect(sitemap).toContain('<lastmod>2026-10-01T00:00:00.000Z</lastmod>');
+  });
+
+  it('accepts W3C Datetime strings and normalizes them to ISO', async () => {
+    const f = fixture({ 'index.html': page('Home'), 'about.html': page('About') });
+    const sitemap = sitemapOf(await planFor(f, {
+      lastmodResolver: (model) => (model.relativePath === 'index.html'
+        ? '2025-05-05'
+        : '2025-05-05T00:00:00+08:00'),
+    }));
+
+    expect(sitemap).toContain('<lastmod>2025-05-05T00:00:00.000Z</lastmod>');
+    expect(sitemap).toContain('<lastmod>2025-05-04T16:00:00.000Z</lastmod>');
+  });
+
+  it('rejects invalid lastmodResolver values while planning', async () => {
+    const f = fixture({ 'index.html': page('Home') });
+    const invalidValues = [
+      'May 5, 2025',
+      '2025-02-30',
+      '',
+      new Date('invalid'),
+      123,
+      true,
+    ];
+
+    for (const value of invalidValues) {
+      await expect(planFor(f, { lastmodResolver: () => value }))
+        .rejects.toThrow(/lastmodResolver.*invalid lastmod for index\.html/);
+    }
+  });
+
   it('aggregates git warnings into one summary outside debug mode', async () => {
     const f = fixture({ 'index.html': page('Home'), 'about.html': page('About') });
     const warnings = [];

@@ -50,7 +50,12 @@ export interface GeoGeneratorOptions {
   prettyUrls?: boolean;
   lastmodStrategy?: LastmodStrategy;
   lastmodIgnore?: string[];
-  /** Plugin API only. `null` omits lastmod; `undefined` falls through to the strategy. */
+  /**
+   * Plugin API only. Return a Date or a valid W3C Datetime string
+   * (`2025-05-05`, `2025-05-05T00:00:00Z`, `2025-05-05T00:00:00+08:00`).
+   * `null` omits lastmod and `undefined` falls through to the strategy.
+   * Invalid values throw while the generation plan is built.
+   */
   lastmodResolver?: (page: GeoPageModel) => Date | string | null | undefined;
   excludePatterns?: string[];
   hreflang?: Record<string, string>;

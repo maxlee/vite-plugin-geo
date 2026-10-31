@@ -156,7 +156,7 @@ dist/
 | `sitemapIndex` | `boolean` | `true` | 是否允许自动拆分 Sitemap |
 | `sitemapMaxBytes` | `number` | `52428800` | 单个未压缩 Sitemap 的字节上限，不能超过 50 MiB |
 | `lastmodIgnore` | `string[]` | `[]` | 跳过 lastmod 解析的 glob（匹配相对路径或公开 pagePath） |
-| `lastmodResolver` | `function` | — | 仅插件 API：`(page) => Date \| string \| null \| undefined`，`null` 省略 lastmod，`undefined` 继续按策略解析 |
+| `lastmodResolver` | `function` | — | 仅插件 API：返回 `Date` 或有效 W3C Datetime 字符串；`null` 省略 lastmod，`undefined` 继续按策略解析；非法值在规划阶段报错 |
 | `skuMd.merchantName` | `string` | 首页真实标题 | 商户名称；无法可靠推导时构建失败 |
 | `skuMd.summary` | `string` | 首页真实描述 | 商户摘要；无法可靠推导时构建失败 |
 | `skuMd.catalog` | `{ label; url }[]` | 必填 | 至少一个同源 HTTPS 目录链接 |
@@ -395,9 +395,21 @@ llms.txt v2 是 2026-08-10 更新的社区提案，不是正式 Web 标准。v0.
 实现依据：[Sitemaps protocol](https://www.sitemaps.org/protocol.html) 和 [Google Sitemap 指南](https://developers.google.com/search/docs/crawling-indexing/sitemaps/build-sitemap)。
 
 - 单个 Sitemap 最多 50,000 URL，未压缩大小最多 50 MB；超过限制时生成分片与 Sitemap index；
-- 默认 `lastmodStrategy: 'none'`。仅在显式选择 `git`、`file-mtime` 或 `build` 时尝试写入；选定来源无法提供可信单页时间时省略该字段；
+- 默认 `lastmodStrategy: 'none'`。`lastmodResolver` 可独立提供单页时间，返回 `Date` 或 W3C Datetime 字符串；`git`、`file-mtime` 或 `build` 策略无法提供可信单页时间时省略该字段；
+- Google 仅在该时间持续准确时使用 `lastmod`。`build` 策略会把所有页面标记为每次构建都更新，Google 可能直接忽略，默认 `none` 更安全；
 - 不生成 `priority` 或 `changefreq`，Google 明确说明会忽略这两个值；
 - Sitemap 可以帮助发现 URL，但不保证抓取或索引。
+
+### 🇬🇧 Google SEO 核验边界
+
+复核依据：[Google AI 优化指南](https://developers.google.com/search/docs/fundamentals/ai-optimization-guide)、[Sitemap 构建](https://developers.google.com/search/docs/crawling-indexing/sitemaps/build-sitemap)、[大型 Sitemap](https://developers.google.com/search/docs/crawling-indexing/sitemaps/large-sitemaps)、[多语言版本](https://developers.google.com/search/docs/specialty/international/localized-versions)、[合并重复网址](https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls)、[URL 结构](https://developers.google.com/search/docs/crawling-indexing/url-structure) 和 [robots.txt 规范](https://developers.google.com/crawling/docs/robots-txt/robots-txt-spec)。
+
+- Markdown 镜像使用 `*.md` 还是 `*.html.md` 不是 Google 的排名或索引条件。0.2.0 改用公开路径是为了避免 `/src/pages/` 中间路径，属于 URL 卫生，不是 Google 要求；
+- Google Search 不使用 llms.txt、Markdown alternate 或 `describedby`，这些输出服务于其他 AI 代理。Google 仍可能把 `.md` 当作普通文本文件抓取或索引；需要阻止索引时，可在部署层返回 `X-Robots-Tag: noindex`，或关闭 `llmsMdMirror`；
+- Sitemap 只收录页面路由，不收录 Markdown 镜像、llms.txt、robots.txt 或 feed；
+- 生成器按页面路由写入 Sitemap。若页面 canonical 指向其他地址，审计的 `canonical-sitemap-mismatch` 与 `verify` 的 `canonical-mismatch` 会提示，但不会自动剔除该页面。需要阻断时可使用 `auditFailOn` 或 `--fail-on-verify warning`；
+- `lastmodResolver` 必须返回 `Date` 或有效 W3C Datetime 字符串，非法值在规划阶段抛错；`build` 策略可能被 Google 忽略；
+- 审计中的“镜像路径”规则是本项目对公开 URL 的约定，不是 Google 规范。Sitemap、canonical、hreflang 的线上结果仍受部署、CDN 与服务器响应影响。
 
 ### 🤖 robots 与 noindex 边界
 
@@ -475,16 +487,32 @@ geo({
 
 ### 多语言站点
 
+全局 `hreflang` 适合所有语言共享相同路径形状的部署，例如独立子域：
+
 ```js
 geo({
-  domain: 'https://example.com',
+  domain: 'https://en.example.com',
   hreflang: {
-    en: 'https://example.com/{path}',
-    'zh-CN': 'https://example.com/zh/{path}',
-    'x-default': 'https://example.com/{path}',
+    en: 'https://en.example.com/{path}',
+    'zh-CN': 'https://zh.example.com/{path}',
+    'x-default': 'https://en.example.com/{path}',
   },
 })
 ```
+
+路径前缀型多语言站点（如 `/about` 与 `/zh/about`）无法用单一 `{path}` 表达两种路径形状。请在每页 HTML 中声明完整语言簇，并启用 `hreflangFromHtml`：
+
+```html
+<link rel="alternate" hreflang="en" href="https://example.com/about">
+<link rel="alternate" hreflang="zh-CN" href="https://example.com/zh/about">
+<link rel="alternate" hreflang="x-default" href="https://example.com/about">
+```
+
+```js
+geo({ domain: 'https://example.com', hreflangFromHtml: true })
+```
+
+页面声明优先于全局映射；没有声明的页面仍会回退到 `hreflang`。插件只在页面没有任何非 `x-default` 自引用时，按 `<html lang>` 补一条自引用，不会改写已有地址或虚构 `x-default`。
 
 ### SKU.md 商户根清单
 
@@ -525,7 +553,7 @@ v0.1.4 不会生成以上文件，也不会把它们映射成 robots.txt 或 llm
 
 **迁移要点**
 
-1. **Markdown 镜像改用公开路径**：pretty URLs 下 `about.html` 的镜像由 `about.html.md` 变为 `about.md`；首页镜像统一为 `index.md`。生成文件、`llms.txt` 链接和注入的 alternate 使用同一个解析器。若已部署旧镜像，请同步更新外部引用。
+1. **Markdown 镜像改用公开路径**：pretty URLs 下 `about.html` 的镜像由 `about.html.md` 变为 `about.md`；首页镜像统一为 `index.md`。生成文件、`llms.txt` 链接和注入的 alternate 使用同一个解析器。若已部署旧镜像，请同步更新外部引用。该改动是 URL 卫生，不是 Google 的索引要求，详见“Google SEO 核验边界”。
 2. **重复路由默认抛错**：多个 HTML 映射到同一公开地址时构建失败并列出冲突文件。需要保留旧行为时显式设置 `routeConflict: 'first'` 或 `'last'`，构建会打印保留的文件。
 3. **绝对 URL 的 Vite/Astro `base` 抛错**：`base: 'https://cdn.example.com/'` 之类不再被拼成 `/https:/...`；请显式设置 `routeBasePath`。
 4. **外部 Sitemap 冲突默认保留并告警**：检测到第三方 Sitemap 时会打印文件名、来源、loc 数量与前 3 条样例。需要接管时设置 `sitemapConflict: 'overwrite'`；显式 `generateSitemap: true` 且未设置策略时会报错并点名“疑似由其他插件生成”。
@@ -536,8 +564,8 @@ v0.1.4 不会生成以上文件，也不会把它们映射成 robots.txt 或 llm
 - `vite-plugin-geo verify`：只读最终 `dist`，校验 Sitemap、robots、canonical、llms.txt、feed 与 Markdown 镜像的一致性；
 - `--report json|sarif`：JSON 报告带 `schemaVersion: "1.0"`，另提供 SARIF 2.1.0；
 - `--fail-on-audit`、`--fail-on-verify`、`--verify`：覆盖生成与校验的 CI 门禁；
-- `hreflangFromHtml`：逐页读取 HTML alternate 并生成 sitemap `xhtml:link`，自动补自引用，不虚构 `x-default`；
-- `lastmodIgnore`、`lastmodResolver`：跳过生成页并支持项目自定义时间；Git 缺失告警聚合为一条；
+- `hreflangFromHtml`：逐页读取 HTML alternate 并生成 sitemap `xhtml:link`；仅在没有非 `x-default` 自引用时按 `<html lang>` 补一条，不虚构 `x-default`；
+- `lastmodIgnore`、`lastmodResolver`：跳过生成页并支持项目自定义时间；resolver 在默认 `none` 策略下同样生效，返回值必须是 `Date` 或有效 W3C Datetime 字符串，非法值在规划阶段抛错，Git 缺失告警聚合为一条；
 - 新审计规则：`.html` 站内链接、镜像路径、孤儿页面、hreflang 互指与自引用；
 - `debug: true` 输出最终 `siteUrl`、`routeBasePath`、页面/排除原因、Sitemap 决策、镜像与产物摘要；
 - `public/` 中的受管文件与 Sitemap 现在参与冲突检测。

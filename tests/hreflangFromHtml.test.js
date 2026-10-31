@@ -90,4 +90,42 @@ describe('hreflangFromHtml', () => {
     expect(sitemap).not.toContain('xhtml:link');
     expect(sitemap).not.toContain('xmlns:xhtml');
   });
+
+  it('treats any declared non-x-default self URL as the self reference', async () => {
+    const f = fixture({
+      'en/index.html': html('en', 'English', [
+        { hreflang: 'en-US', href: 'https://example.test/en' },
+        { hreflang: 'zh', href: 'https://example.test/zh' },
+      ]),
+    });
+    const sitemap = sitemapOf(await planFor(f, { hreflangFromHtml: true }));
+
+    expect(sitemap).toContain('hreflang="en-US" href="https://example.test/en"');
+    expect(sitemap).not.toContain('hreflang="en" href="https://example.test/en"');
+  });
+
+  it('treats a trailing slash as the same self URL', async () => {
+    const f = fixture({
+      'en/index.html': html('en', 'English', [
+        { hreflang: 'en', href: 'https://example.test/en/' },
+      ]),
+    });
+    const sitemap = sitemapOf(await planFor(f, { hreflangFromHtml: true }));
+
+    expect((sitemap.match(/hreflang="en"/g) || [])).toHaveLength(1);
+    expect(sitemap).toContain('hreflang="en" href="https://example.test/en/"');
+  });
+
+  it('still synthesizes the self reference when only x-default points at the page', async () => {
+    const f = fixture({
+      'en/index.html': html('en', 'English', [
+        { hreflang: 'x-default', href: 'https://example.test/en' },
+        { hreflang: 'zh', href: 'https://example.test/zh' },
+      ]),
+    });
+    const sitemap = sitemapOf(await planFor(f, { hreflangFromHtml: true }));
+
+    expect(sitemap).toContain('hreflang="en" href="https://example.test/en"');
+    expect(sitemap).toContain('hreflang="x-default" href="https://example.test/en"');
+  });
 });

@@ -660,6 +660,21 @@ function resolveHttpUrl(value, baseUrl) {
   }
 }
 
+function normalizeComparableUrl(value) {
+  try {
+    const resolved = new URL(value);
+    resolved.hash = '';
+    const serialized = resolved.toString();
+    // /en/ and /en address the same page; keep the site root slash so that
+    // https://example.test/ still matches its canonical serialization.
+    return resolved.pathname !== '/' && serialized.endsWith('/')
+      ? serialized.slice(0, -1)
+      : serialized;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve the first valid Markdown alternate declared by an HTML page.
  * @param {string} htmlContent - Raw HTML source
@@ -899,10 +914,13 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
     const loc = composePageUrl(baseUrl, pagePath, options.routeBasePath);
     const pageModel = getPageModel(options, filePath);
     const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, options);
-    const lastmod = lastmodStrategy === 'none'
-      ? null
-      : (pageModel
-        ? pageModel.mtime
+    // pageModel.mtime already contains the lastmodResolver result and the
+    // configured strategy. Do not short-circuit on strategy 'none' here:
+    // a resolver is allowed to provide timestamps with the default strategy.
+    const lastmod = pageModel
+      ? pageModel.mtime
+      : (lastmodStrategy === 'none'
+        ? null
         : extractLastmod(mtimeSourcePath || filePath, lastmodStrategy, buildDate));
 
     // Per-page declarations win when enabled; pages without any fall back to
@@ -1088,9 +1106,14 @@ function generateHreflangLinksFromHtml(declared, lang, pageUrl, baseUrl) {
 
   const normalizedLang = String(lang || '').trim();
   const selfUrl = resolveHttpUrl(pageUrl || baseUrl, baseUrl);
+  const comparableSelfUrl = selfUrl ? normalizeComparableUrl(selfUrl) : null;
   if (normalizedLang && selfUrl && isValidLanguageTag(normalizedLang)) {
-    const hasSelf = [...links.values()].some(({ hreflang, href }) => (
-      hreflang.toLowerCase() === normalizedLang.toLowerCase() && href === selfUrl
+    // Any declared non-x-default alternate that resolves to this page counts
+    // as the self reference, even when its tag differs from <html lang>
+    // (for example en-US vs en). x-default is a fallback, not a language.
+    const hasSelf = comparableSelfUrl !== null && [...links.values()].some(({ hreflang, href }) => (
+      hreflang.toLowerCase() !== 'x-default'
+      && normalizeComparableUrl(href) === comparableSelfUrl
     ));
     if (!hasSelf) {
       links.set(`${normalizedLang}\0${selfUrl}`, { hreflang: normalizedLang, href: selfUrl });
