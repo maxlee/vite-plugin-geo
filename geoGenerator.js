@@ -165,9 +165,14 @@ export function normalizeFilePath(filePath) {
  * @param {string} filePath - Absolute file path
  * @param {string} strategy - 'none', 'file-mtime', 'build', or 'git'
  * @param {string} buildDate - ISO 8601 build date
+ * @param {{onWarning?: (message: string) => void}} [context={}] - Warning sink
  * @returns {string|null} Verified ISO 8601 timestamp, or null when unavailable
  */
-export function extractLastmod(filePath, strategy, buildDate) {
+export function extractLastmod(filePath, strategy, buildDate, context = {}) {
+  const warn = typeof context.onWarning === 'function'
+    ? context.onWarning
+    : (message) => console.warn(message);
+
   if (!strategy || strategy === 'none') {
     return null;
   }
@@ -179,7 +184,7 @@ export function extractLastmod(filePath, strategy, buildDate) {
   if (strategy === 'git') {
     try {
       if (!existsSync(filePath)) {
-        console.warn(`⚠️  [Non-fatal] File not found for git lastmod: ${filePath}, omitting lastmod`);
+        warn(`⚠️  [Non-fatal] File not found for git lastmod: ${filePath}, omitting lastmod`);
         return null;
       }
 
@@ -199,20 +204,20 @@ export function extractLastmod(filePath, strategy, buildDate) {
     } catch {
       // Omit unverifiable timestamps.
     }
-    console.warn(`⚠️  [Non-fatal] No git timestamp for ${filePath}, omitting lastmod`);
+    warn(`⚠️  [Non-fatal] No git timestamp for ${filePath}, omitting lastmod`);
     return null;
   }
 
   try {
     if (!existsSync(filePath)) {
-      console.warn(`⚠️  [Non-fatal] File not found for mtime: ${filePath}, omitting lastmod`);
+      warn(`⚠️  [Non-fatal] File not found for mtime: ${filePath}, omitting lastmod`);
       return null;
     }
-    
+
     const stats = statSync(filePath);
     return stats.mtime.toISOString();
   } catch (error) {
-    console.warn(`⚠️  [Non-fatal] Failed to read mtime for ${filePath}: ${error.message}, omitting lastmod`);
+    warn(`⚠️  [Non-fatal] Failed to read mtime for ${filePath}: ${error.message}, omitting lastmod`);
     return null;
   }
 }
@@ -233,9 +238,10 @@ export function extractLastmod(filePath, strategy, buildDate) {
  */
 export function resolveLastmodSourcePath(distHtmlFilePath, distDir, options = {}) {
   const sourceHtmlDir = options.sourceHtmlDir || 'src/pages';
+  const projectRoot = options.projectRoot || process.cwd();
   const sourceRoot = isAbsolute(sourceHtmlDir)
     ? sourceHtmlDir
-    : resolve(process.cwd(), sourceHtmlDir);
+    : resolve(projectRoot, sourceHtmlDir);
 
   const relativePath = normalizeFilePath(relative(distDir, distHtmlFilePath));
   const stripPathPrefixes = (options.stripPathPrefixes || DEFAULT_STRIP_PATH_PREFIXES)
@@ -302,7 +308,7 @@ function detectNoindex(htmlContent) {
  * @param {string} str - String to match
  * @returns {boolean} True if matches
  */
-function matchGlob(pattern, str) {
+export function matchGlob(pattern, str) {
   // Escape special regex characters except * and /
   const regexPattern = pattern
     .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
@@ -315,18 +321,19 @@ function matchGlob(pattern, str) {
 }
 
 /**
- * Filter HTML files by applying noindex detection and custom exclude patterns.
+ * Classify HTML files as included or excluded without logging.
+ * Excluded entries carry the reason so callers can aggregate diagnostics.
  * @param {string[]} htmlFiles - Absolute HTML file paths
  * @param {object} options - Filter options
  * @param {string[]} [options.excludePatterns] - Exclude patterns (glob)
  * @param {string} options.distDir - Output directory
- * @returns {Promise<{included: string[], excluded: string[]}>}
+ * @returns {{included: string[], excluded: string[], excludedDetails: Array<{filePath: string, reason: string}>}}
  */
-export async function filterHtmlFiles(htmlFiles, options) {
+export function classifyHtmlFiles(htmlFiles, options) {
   const { excludePatterns = DEFAULT_EXCLUDE_PATTERNS, distDir } = options;
   const included = [];
   const excluded = [];
-  
+
   for (const filePath of htmlFiles) {
     const relativePath = normalizeFilePath(relative(distDir, filePath));
     const fileName = basename(filePath);
@@ -370,20 +377,81 @@ export async function filterHtmlFiles(htmlFiles, options) {
       included.push(filePath);
     }
   }
-  
+
+  return {
+    included,
+    excluded: excluded.map((entry) => entry.filePath),
+    excludedDetails: excluded,
+  };
+}
+
+/**
+ * Filter HTML files by applying noindex detection and custom exclude patterns.
+ * @param {string[]} htmlFiles - Absolute HTML file paths
+ * @param {object} options - Filter options
+ * @param {string[]} [options.excludePatterns] - Exclude patterns (glob)
+ * @param {string} options.distDir - Output directory
+ * @returns {Promise<{included: string[], excluded: string[]}>}
+ */
+export async function filterHtmlFiles(htmlFiles, options) {
+  const { included, excluded, excludedDetails } = classifyHtmlFiles(htmlFiles, options);
+
   // Log excluded files
-  if (excluded.length > 0) {
-    console.log(`\n🚫 Excluded ${excluded.length} file(s):`);
-    excluded.forEach(({ filePath, reason }) => {
+  if (excludedDetails.length > 0) {
+    console.log(`\n🚫 Excluded ${excludedDetails.length} file(s):`);
+    excludedDetails.forEach(({ filePath, reason }) => {
       const fileName = basename(filePath);
       console.log(`   - ${fileName} (${reason})`);
     });
   }
-  
+
   return {
     included,
-    excluded: excluded.map(e => e.filePath),
+    excluded,
   };
+}
+
+/**
+ * Normalize a route base path to canonical `'' | '/' | '/path/'` form.
+ * Rejects absolute URLs (for example a CDN `base`); callers must set
+ * `routeBasePath` explicitly when the site is served from a path.
+ * @param {string} value - Raw route base path
+ * @param {{source?: string}} [context={}] - Error context
+ * @returns {string} Canonical route base path
+ */
+export function normalizeRouteBasePath(value, context = {}) {
+  const source = context.source || 'routeBasePath';
+
+  if (value === undefined || value === null) {
+    return '';
+  }
+
+  const raw = String(value).trim();
+  if (raw === '' || raw === './') {
+    return '';
+  }
+  if (raw === '/') {
+    return '/';
+  }
+
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(raw) || raw.startsWith('//')) {
+    throw new Error(
+      `${source} must be a URL path such as "/docs/", not an absolute URL: "${raw}". `
+      + 'Set `routeBasePath` explicitly to the path the site is served from.',
+    );
+  }
+
+  const pathOnly = raw.split(/[?#]/, 1)[0];
+  if (!pathOnly || pathOnly.includes('\\') || /[\u0000-\u001f\u007f]/.test(pathOnly)) {
+    throw new Error(`Invalid ${source}: "${raw}". Use a URL path such as "/docs/".`);
+  }
+
+  const segments = pathOnly.split('/').filter(Boolean);
+  if (segments.some((segment) => segment === '.' || segment === '..')) {
+    throw new Error(`Invalid ${source}: "${raw}". Path segments must not be "." or "..".`);
+  }
+
+  return segments.length > 0 ? `/${segments.join('/')}/` : '';
 }
 
 /**
@@ -394,12 +462,8 @@ export async function filterHtmlFiles(htmlFiles, options) {
  * @returns {string} Final absolute URL without trailing slash
  */
 export function composePageUrl(siteUrl, pagePath, routeBasePath = '') {
-  // Inline normalizeRouteBasePath logic
-  let normalizedBasePath = '';
-  if (routeBasePath && routeBasePath !== '/' && routeBasePath !== './') {
-    normalizedBasePath = normalizeFilePath(routeBasePath).replace(/\/+$/, '');
-  }
-
+  const normalizedBasePath = normalizeRouteBasePath(routeBasePath)
+    .replace(/^\/+|\/+$/g, '');
   const normalizedPagePath = normalizeFilePath(pagePath);
   const joinedPath = [normalizedBasePath, normalizedPagePath]
     .filter(Boolean)
@@ -556,6 +620,7 @@ export function analyzeHtmlPage(htmlContent, { audit = false } = {}) {
   const titleNode = findFirstNodeByTagName(documentAst, 'title');
   const htmlNode = findFirstNodeByTagName(documentAst, 'html');
   const metaNodes = findNodesByTagName(documentAst, 'meta');
+  const linkNodes = findNodesByTagName(documentAst, 'link');
   const descriptionNode = metaNodes.find(
     (node) => getAttribute(node, 'name').toLowerCase() === 'description',
   );
@@ -564,12 +629,23 @@ export function analyzeHtmlPage(htmlContent, { audit = false } = {}) {
     const content = getAttribute(node, 'content').toLowerCase();
     return name === 'robots' && content.split(/[\s,]+/).includes('noindex');
   });
+  // Declared alternates are cheap to collect here and drive per-page hreflang
+  // in the sitemap when `hreflangFromHtml` is enabled.
+  const hreflang = [];
+  for (const link of linkNodes) {
+    const relTokens = getAttribute(link, 'rel').toLowerCase().split(/\s+/).filter(Boolean);
+    const languageTag = getAttribute(link, 'hreflang').trim();
+    const href = getAttribute(link, 'href').trim();
+    if (!relTokens.includes('alternate') || !languageTag || !href) continue;
+    hreflang.push({ hreflang: languageTag, href });
+  }
 
   return {
     title: getNodeText(titleNode).trim(),
     description: getAttribute(descriptionNode, 'content').trim(),
     lang: getAttribute(htmlNode, 'lang').trim(),
     noindex,
+    hreflang,
     ...(audit ? { audit: collectAuditFacts(documentAst) } : {}),
     markdown: convertHtmlAstToMarkdown(documentAst),
   };
@@ -610,16 +686,25 @@ export function resolveMarkdownAlternateUrl(htmlContent, pageUrl) {
 }
 
 /**
- * Return the generated Markdown path for an HTML build asset.
- * @param {string} relativePath - HTML path relative to the build directory
+ * Derive the Markdown mirror path from the public page path.
+ * The result is what gets emitted into dist and is also the public mirror URL,
+ * so it must never contain the HTML bundle path or intermediate prefixes.
+ * @param {string} pagePath - Public page path from resolvePagePath ('' for home)
  * @param {'append'|'replace'} style - Mirror naming style
- * @returns {string} Markdown build asset path
+ * @returns {string} Markdown mirror path relative to dist root
  */
-export function resolveMarkdownMirrorPath(relativePath, style = 'append') {
-  const normalizedPath = normalizeFilePath(relativePath);
-  return style === 'replace'
-    ? normalizedPath.replace(/\.html$/i, '.md')
-    : `${normalizedPath}.md`;
+export function resolveMarkdownMirrorPath(pagePath, style = 'append') {
+  const normalizedPath = normalizeFilePath(pagePath);
+
+  if (!normalizedPath || normalizedPath === 'index' || normalizedPath === 'index.html') {
+    return 'index.md';
+  }
+
+  if (style === 'replace' && /\.html?$/i.test(normalizedPath)) {
+    return normalizedPath.replace(/\.html?$/i, '.md');
+  }
+
+  return `${normalizedPath}.md`;
 }
 
 /**
@@ -684,55 +769,71 @@ export function injectLlmsDiscoveryLinks(htmlContent, { markdownUrl, llmsUrl, pa
   return updated;
 }
 
-function getHtmlCandidateScore(relativePath, options = {}) {
-  const normalizedRelativePath = normalizeFilePath(relativePath);
-  // Check if path uses intermediate prefix by comparing with resolved path
-  const resolvedPath = resolvePagePath(relativePath, { ...options, prettyUrls: false });
-  // If the original path is much longer than resolved, it likely uses intermediate prefix
-  const usesIntermediatePrefix = normalizedRelativePath.length > resolvedPath.length + 5;
+/**
+ * Group candidates that resolve to the same public page path and resolve
+ * conflicts deterministically.
+ *
+ * By default a duplicate route throws: silently dropping a page hides it from
+ * sitemap, feed, and llms.txt without any signal. `routeConflict: 'first'` or
+ * `'last'` opts into the previous lenient behavior.
+ *
+ * @param {Map<string, Array<{relativePath: string}>>} groups - pagePath -> candidates
+ * @param {object} [options={}] - Options
+ * @param {'error'|'first'|'last'} [options.routeConflict='error'] - Conflict policy
+ * @returns {{selected: Array<object>, conflicts: Array<{pagePath: string, route: string, files: string[], chosen: string}>}}
+ */
+export function resolvePagePathConflicts(groups, options = {}) {
+  const policy = options.routeConflict || 'error';
+  const selected = [];
+  const conflicts = [];
 
-  return {
-    usesIntermediatePrefix,
-    length: normalizedRelativePath.length,
-  };
+  for (const [pagePath, entries] of groups) {
+    if (entries.length === 1) {
+      selected.push(entries[0]);
+      continue;
+    }
+
+    const sorted = [...entries].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    const files = sorted.map((entry) => entry.relativePath);
+    const route = pagePath ? `/${pagePath}` : '/';
+
+    if (policy === 'error') {
+      throw new Error(
+        `Route conflict: ${files.length} files map to the same public page "${route}": ${files.join('、')}. `
+        + "Remove or rename one of them, or set routeConflict: 'first' or 'last' to choose deterministically.",
+      );
+    }
+
+    const chosen = policy === 'last' ? sorted[sorted.length - 1] : sorted[0];
+    conflicts.push({ pagePath, route, files, chosen: chosen.relativePath });
+    selected.push(chosen);
+  }
+
+  selected.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return { selected, conflicts };
 }
 
 /**
  * Dedupe HTML files by route page path.
- * If both intermediate and final paths exist, prefer final route-like path.
  * @param {string[]} htmlFiles - Candidate absolute HTML file paths
  * @param {string} distDir - Dist output directory
  * @param {object} [options={}] - Options
  * @param {string[]} [options.stripPathPrefixes] - Prefixes to strip
+ * @param {'error'|'first'|'last'} [options.routeConflict] - Conflict policy
  * @returns {string[]} Dedupe HTML file paths
  */
 export function dedupeHtmlFilesByPagePath(htmlFiles, distDir, options = {}) {
-  const pagePathToCandidate = new Map();
+  const groups = new Map();
 
   for (const filePath of htmlFiles) {
     const relativePath = normalizeFilePath(relative(distDir, filePath));
     const pagePath = resolvePagePath(relativePath, options);
-    const score = getHtmlCandidateScore(relativePath, options);
-    const current = pagePathToCandidate.get(pagePath);
-
-    if (!current) {
-      pagePathToCandidate.set(pagePath, { filePath, score });
-      continue;
-    }
-
-    const shouldReplace =
-      (current.score.usesIntermediatePrefix && !score.usesIntermediatePrefix)
-      || (
-        current.score.usesIntermediatePrefix === score.usesIntermediatePrefix
-        && score.length < current.score.length
-      );
-
-    if (shouldReplace) {
-      pagePathToCandidate.set(pagePath, { filePath, score });
-    }
+    if (!groups.has(pagePath)) groups.set(pagePath, []);
+    groups.get(pagePath).push({ filePath, relativePath });
   }
 
-  return Array.from(pagePathToCandidate.values())
+  const { selected } = resolvePagePathConflicts(groups, options);
+  return selected
     .map((entry) => entry.filePath)
     .sort((a, b) => a.localeCompare(b));
 }
@@ -782,9 +883,13 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
   const sitemapIndex = options.sitemapIndex !== false; // Default to true
   const sitemapMaxBytes = options.sitemapMaxBytes || SITEMAP_MAX_BYTES;
   const hreflangConfig = options.hreflang;
+  const hreflangFromHtml = options.hreflangFromHtml === true;
 
   // Check if we need xmlns:xhtml namespace for hreflang
-  const needsXhtmlNamespace = hreflangConfig && Object.keys(hreflangConfig).length > 0;
+  const needsXhtmlNamespace = (hreflangConfig && Object.keys(hreflangConfig).length > 0)
+    || (hreflangFromHtml && dedupedHtmlFiles.some(
+      (filePath) => (getPageModel(options, filePath)?.hreflang || []).length > 0,
+    ));
 
   const urlEntries = dedupedHtmlFiles.map((filePath) => {
     const relativePath = normalizeFilePath(relative(distDir, filePath));
@@ -800,10 +905,19 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
         ? pageModel.mtime
         : extractLastmod(mtimeSourcePath || filePath, lastmodStrategy, buildDate));
 
-    // Generate hreflang links if configured
-    const hreflangLinks = hreflangConfig
-      ? generateHreflangLinks(pagePath, hreflangConfig, baseUrl)
-      : [];
+    // Per-page declarations win when enabled; pages without any fall back to
+    // the global hreflang patterns.
+    let hreflangLinks = [];
+    if (hreflangFromHtml && pageModel?.hreflang?.length > 0) {
+      hreflangLinks = generateHreflangLinksFromHtml(
+        pageModel.hreflang,
+        pageModel.lang,
+        loc,
+        baseUrl,
+      );
+    } else if (hreflangConfig) {
+      hreflangLinks = generateHreflangLinks(pagePath, hreflangConfig, baseUrl);
+    }
 
     let urlEntry = `  <url>\n    <loc>${escapeXml(loc)}</loc>`;
     if (lastmod) {
@@ -956,6 +1070,40 @@ function generateSitemapIndex(sitemapFiles, baseUrl, lastmod, routeBasePath = ''
 ${sitemapEntries.join('\n')}
 </sitemapindex>`;
 }
+/**
+ * Build xhtml:link elements from alternates declared in one page's HTML.
+ * Declarations are authoritative; a self entry is synthesized from
+ * `<html lang>` when missing, and x-default is never invented.
+ */
+function generateHreflangLinksFromHtml(declared, lang, pageUrl, baseUrl) {
+  const links = new Map();
+
+  for (const entry of declared) {
+    const languageTag = String(entry?.hreflang || '').trim();
+    if (!languageTag || !isValidLanguageTag(languageTag, { allowXDefault: true })) continue;
+    const href = resolveHttpUrl(entry?.href, pageUrl || baseUrl);
+    if (!href) continue;
+    links.set(`${languageTag}\0${href}`, { hreflang: languageTag, href });
+  }
+
+  const normalizedLang = String(lang || '').trim();
+  const selfUrl = resolveHttpUrl(pageUrl || baseUrl, baseUrl);
+  if (normalizedLang && selfUrl && isValidLanguageTag(normalizedLang)) {
+    const hasSelf = [...links.values()].some(({ hreflang, href }) => (
+      hreflang.toLowerCase() === normalizedLang.toLowerCase() && href === selfUrl
+    ));
+    if (!hasSelf) {
+      links.set(`${normalizedLang}\0${selfUrl}`, { hreflang: normalizedLang, href: selfUrl });
+    }
+  }
+
+  return [...links.values()]
+    .sort((a, b) => a.hreflang.localeCompare(b.hreflang) || a.href.localeCompare(b.href))
+    .map(({ hreflang, href }) => (
+      `    <xhtml:link rel="alternate" hreflang="${escapeXml(hreflang)}" href="${escapeXml(href)}"/>`
+    ));
+}
+
 /**
  * Generate hreflang links for a page (internal helper).
  * @param {string} pagePath - Page path (without .html)
@@ -1253,7 +1401,7 @@ function collectLlmsPages(siteMetadata, htmlFiles, distDir, options = {}) {
       llmsMdMirror
         ? composePageUrl(
           url,
-          resolveMarkdownMirrorPath(relativePath, options.llmsMdMirrorStyle),
+          resolveMarkdownMirrorPath(pagePath, options.llmsMdMirrorStyle),
           options.routeBasePath,
         )
         : composePageUrl(url, pagePath, options.routeBasePath)

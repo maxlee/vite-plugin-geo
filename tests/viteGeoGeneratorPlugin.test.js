@@ -512,8 +512,7 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
       console.warn = originalWarn;
     }
 
-    expect(warnings).toEqual([
-      expect.stringContaining("vite-plugin-geo/astro"),
-    ]);
+    expect(warnings.filter((message) => message.includes('vite-plugin-geo/astro'))).toHaveLength(1);
+    expect(warnings.some((message) => message.includes('No HTML pages were found'))).toBe(true);
   });
 });

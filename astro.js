@@ -1,18 +1,10 @@
 import { logGeoAudit } from './geoAudit.js';
 import { fileURLToPath } from 'url';
-import { findHtmlFiles } from './geoGenerator.js';
+import { findHtmlFiles, normalizeRouteBasePath } from './geoGenerator.js';
 import { runSeoCliGenerate } from './cli.js';
 
 function normalizeAstroBase(base) {
-  if (typeof base !== 'string' || base === '' || base === './') {
-    return '';
-  }
-
-  if (base === '/') {
-    return '/';
-  }
-
-  return `/${base.replace(/^\/+|\/+$/g, '')}/`;
+  return normalizeRouteBasePath(base, { source: 'Astro base' });
 }
 
 function createAstroLogger(logger) {

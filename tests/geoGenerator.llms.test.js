@@ -49,11 +49,11 @@ describe('llms.txt and Markdown generation', () => {
 
     expect(result).toMatch(/^# Test Site\n\n> Test description/m);
     expect(result).toContain('## Docs');
-    expect(result).toContain('[Docs Home](https://example.com/docs/index.html.md)');
+    expect(result).toContain('[Docs Home](https://example.com/docs.md)');
     expect(result).toContain('## Examples');
-    expect(result).toContain('[Basic Example](https://example.com/examples/basic.html.md)');
+    expect(result).toContain('[Basic Example](https://example.com/examples/basic.md)');
     expect(result).toContain('## API');
-    expect(result).toContain('[API Reference](https://example.com/api/reference.html.md)');
+    expect(result).toContain('[API Reference](https://example.com/api/reference.md)');
     expect(result).toContain('## Optional');
     expect(result).not.toMatch(/Shopify|SHOPLINE|NDJSON|## Key Features/i);
   });

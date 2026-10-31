@@ -1,12 +1,16 @@
-import { logGeoAudit } from './geoAudit.js';
-import { existsSync, readFileSync } from 'fs';
-import { isAbsolute, resolve } from 'path';
+import { assertAuditGate, logGeoAudit } from './geoAudit.js';
+import { readFileSync, readdirSync } from 'fs';
+import { isAbsolute, join, resolve } from 'path';
 import {
   buildGeoGenerationPlan,
+  formatGeoDebugSummary,
   logRobotsPreservation,
+  logSitemapCompatibility,
+  summarizeExcludedReasons,
   validateGeoOptions,
 } from './geoBuildPipeline.js';
 import { isAstroProject } from './astroSitemapCompatibility.js';
+import { normalizeRouteBasePath } from './geoGenerator.js';
 
 function resolveDistDir(config, explicitDistDir) {
   const configRoot = config?.root ?? process.cwd();
@@ -34,6 +38,57 @@ function collectHtmlAssetsFromBundle(bundle) {
   ));
 }
 
+const MANAGED_PUBLIC_FILENAMES = new Set([
+  'robots.txt',
+  'llms.txt',
+  'feed.xml',
+  'humans.txt',
+  'sitemap.xml',
+  'sitemap_index.xml',
+]);
+
+function collectPublicDirAssets(publicDir, assets) {
+  const existing = new Set(assets.map(({ filename }) => filename));
+
+  const walk = (dir, prefix) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const relativeName = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(join(dir, entry.name), relativeName);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const fileName = entry.name.toLowerCase();
+      const isManagedName = !prefix && MANAGED_PUBLIC_FILENAMES.has(fileName);
+      const isXml = fileName.endsWith('.xml');
+      if (!isManagedName && !isXml) continue;
+      if (existing.has(relativeName)) continue;
+
+      let content;
+      try {
+        content = readFileSync(join(dir, entry.name), 'utf-8');
+      } catch {
+        continue;
+      }
+      // Only sitemap-shaped XML participates in conflict detection.
+      if (isXml && !/<(?:sitemapindex|urlset)\b/i.test(content)) continue;
+
+      existing.add(relativeName);
+      assets.push({ filename: relativeName, content, source: 'publicDir' });
+    }
+  };
+
+  walk(publicDir, '');
+}
+
 function collectOutputAssets(bundle, config) {
   const assets = Object.values(bundle || [])
     .filter((output) => (
@@ -45,13 +100,11 @@ function collectOutputAssets(bundle, config) {
       filename: output.fileName,
       content: String(output.source),
     }));
-  // Vite copies public files separately; they are not necessarily bundle assets.
-  if (config?.publicDir && config.build?.copyPublicDir !== false
-    && !assets.some(({ filename }) => filename === 'robots.txt')) {
-    const robotsPath = resolve(config.publicDir, 'robots.txt');
-    if (existsSync(robotsPath)) {
-      assets.push({ filename: 'robots.txt', content: readFileSync(robotsPath, 'utf-8') });
-    }
+
+  // Vite copies public files separately; scan them so a public/sitemap.xml
+  // participates in conflict detection instead of silently disappearing.
+  if (config?.publicDir && config.build?.copyPublicDir !== false) {
+    collectPublicDirAssets(config.publicDir, assets);
   }
   return assets;
 }
@@ -79,6 +132,13 @@ export function createGeoGeneratorPlugin(options = {}) {
 
     configResolved(config) {
       resolvedConfig = config;
+      if (typeof options.routeBasePath !== 'string') {
+        try {
+          normalizeRouteBasePath(config.base, { source: 'Vite base' });
+        } catch (error) {
+          throw new Error(`${error.message} Set routeBasePath explicitly on the geo plugin.`);
+        }
+      }
     },
 
     buildStart: {
@@ -101,6 +161,19 @@ export function createGeoGeneratorPlugin(options = {}) {
         const projectRoot = resolvedConfig?.root || process.cwd();
 
         if (htmlAssets.length === 0) {
+          const distDir = resolveDistDir(resolvedConfig, outputOptions.dir || options.distDir);
+          const sourceHtmlDir = resolveSourceHtmlDir(resolvedConfig, options.sourceHtmlDir);
+          const buildShape = resolvedConfig?.build?.ssr
+            ? 'SSR'
+            : (resolvedConfig?.build?.lib ? 'library' : 'static');
+          console.warn(
+            '⚠️  [vite-plugin-geo] No HTML pages were found, so no GEO files were generated. '
+            + `root=${projectRoot} distDir=${distDir} sourceHtmlDir=${sourceHtmlDir} `
+            + `include=**/*.html excludePatterns=${(options.excludePatterns || []).join(',') || 'none'} buildShape=${buildShape}`,
+          );
+          if (buildShape !== 'static') {
+            console.warn(`⚠️  [vite-plugin-geo] ${buildShape} builds do not emit static HTML; GEO generation is skipped by design.`);
+          }
           if (options.audit !== false) logGeoAudit({ checkedPages: 0, diagnostics: [] }, console);
           if (isAstroProject(projectRoot) && !astroUsageWarningShown) {
             console.warn("⚠️  Astro generates HTML after Vite finishes. Move this plugin from vite.plugins to integrations and import it from 'vite-plugin-geo/astro'.");
@@ -136,6 +209,24 @@ export function createGeoGeneratorPlugin(options = {}) {
           currentDate,
         });
 
+        if (plan.report.includedHtmlFiles === 0) {
+          console.warn(
+            `⚠️  [vite-plugin-geo] All ${plan.report.totalHtmlFiles} HTML file(s) were excluded, so no GEO files were generated. `
+            + `Reasons: ${summarizeExcludedReasons(plan.report.excludedDetails) || 'unknown'}`,
+          );
+        }
+        (plan.report.routeConflicts || []).forEach(({ route, files, chosen }) => {
+          console.warn(
+            `⚠️  [vite-plugin-geo] Route conflict for ${route}: ${files.join('、')}; kept ${chosen}.`,
+          );
+        });
+
+        logSitemapCompatibility(plan.report.sitemapCompatibility, console);
+        logRobotsPreservation(plan.report.robotsCompatibility, console);
+        logGeoAudit(plan.report.audit, console);
+        // Gate before mutating the bundle so a failing CI build ships nothing.
+        assertAuditGate(plan.report.audit, options.auditFailOn);
+
         plan.htmlUpdates.forEach(({ filename, content }) => {
           const asset = Object.values(bundle).find(
             (output) => output?.type === 'asset' && output.fileName === filename,
@@ -159,14 +250,12 @@ export function createGeoGeneratorPlugin(options = {}) {
           });
         });
 
-        logRobotsPreservation(plan.report.robotsCompatibility, console);
-        logGeoAudit(plan.report.audit, console);
-
-        debug('Generated GEO assets', {
-          includedHtmlFiles: plan.report.includedHtmlFiles,
-          excludedHtmlFiles: plan.report.excludedHtmlFiles,
-          generatedFiles: plan.report.generatedFiles,
-        });
+        debug(formatGeoDebugSummary({
+          projectRoot,
+          distDir,
+          sourceHtmlDir,
+          report: plan.report,
+        }));
       },
     },
   };
@@ -206,11 +295,19 @@ function logPluginVersion(options = {}) {
     generateFeed: resolvedSummary.generateFeed,
     llmsMdMirror: resolvedSummary.llmsMdMirror,
     sitemapIndex: options.sitemapIndex !== false,
-    generateSitemap: options.generateSitemap !== false,
+    generateSitemap: options.generateSitemap === undefined ? 'auto' : options.generateSitemap,
     generateRobots: options.generateRobots !== false,
     generateHumans: options.generateHumans === true,
     skuMd: options.skuMd !== undefined,
     debug: true,
-  }).filter(([, enabled]) => enabled).map(([name]) => name);
+  }).filter(([, enabled]) => enabled !== false && enabled !== undefined).map(([name, enabled]) => (
+    enabled === 'auto' ? `${name}=auto` : name
+  ));
   console.log(`   Enabled options: ${enabledOptions.join(', ') || 'none'}`);
+  const behavior = {
+    sitemapConflict: options.sitemapConflict || 'auto',
+    routeConflict: options.routeConflict || 'error',
+    auditFailOn: options.auditFailOn || 'none',
+  };
+  console.log(`   Conflict/gate behavior: ${Object.entries(behavior).map(([key, value]) => `${key}=${value}`).join(', ')}`);
 }

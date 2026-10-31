@@ -23,10 +23,12 @@ import {
   injectFeedLink,
   injectLlmsDiscoveryLinks,
   normalizeFilePath,
+  normalizeRouteBasePath,
   resolveMarkdownAlternateUrl,
   resolveMarkdownMirrorPath,
   resolveLastmodSourcePath,
   resolvePagePath,
+  resolvePagePathConflicts,
 } from './geoGenerator.js';
 import {
   extractTeamInfoFromPackageJson,
@@ -96,11 +98,65 @@ function isValidLanguageTag(languageTag, { allowXDefault = false } = {}) {
   }
 }
 
-function normalizeRouteBasePath(value) {
-  if (!value || value === '/' || value === './') {
-    return value === '/' ? '/' : '';
+/**
+ * Summarize exclusion reasons as `reason × count` for zero-page diagnostics.
+ */
+export function summarizeExcludedReasons(excludedDetails = []) {
+  const counts = new Map();
+  excludedDetails.forEach(({ reason = 'excluded' }) => {
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  });
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([reason, count]) => `${reason} × ${count}`)
+    .join('、');
+}
+
+/**
+ * Format the final build decisions for `debug: true` output.
+ * Mirrors the information needed to diagnose silent skips without reading source.
+ */
+export function formatGeoDebugSummary({
+  projectRoot,
+  distDir,
+  sourceHtmlDir,
+  report = {},
+} = {}) {
+  const lines = ['🔍 [GEO debug] Generation summary'];
+  lines.push(`   siteUrl=${report.siteUrl || ''} routeBasePath=${report.routeBasePath ?? ''}`);
+  lines.push(`   projectRoot=${projectRoot} distDir=${distDir} sourceHtmlDir=${sourceHtmlDir}`);
+  lines.push(
+    `   pages: total=${report.totalHtmlFiles ?? 0} included=${report.includedHtmlFiles ?? 0} `
+    + `excluded=${report.excludedHtmlFiles ?? 0}`,
+  );
+  if (report.excludedDetails?.length) {
+    lines.push(`   exclusion reasons: ${summarizeExcludedReasons(report.excludedDetails)}`);
   }
-  return `/${String(value).replace(/^\/+|\/+$/g, '')}/`;
+  if (report.routeConflicts?.length) {
+    lines.push(
+      '   route conflicts: '
+      + report.routeConflicts.map(({ route, chosen }) => `${route} → ${chosen}`).join('、'),
+    );
+  }
+  const sitemap = report.sitemapCompatibility;
+  if (sitemap) {
+    lines.push(
+      `   sitemap: detected=${sitemap.detected} decision=${sitemap.decision} `
+      + `url=${sitemap.sitemapUrl} reason=${sitemap.reason}`,
+    );
+  }
+  const files = report.generatedFiles || [];
+  if (files.length > 0) {
+    lines.push(`   generated: ${files.map(({ filename, size }) => `${filename} (${size}B)`).join('、')}`);
+    const mirrors = files
+      .filter(({ filename }) => filename.endsWith('.md'))
+      .slice(0, 5)
+      .map(({ filename }) => filename);
+    if (mirrors.length > 0) {
+      lines.push(`   markdown mirrors: ${mirrors.join('、')}${files.length > 5 ? '…' : ''}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 function resolvePackageJsonPath(projectRoot, packageJsonPath) {
@@ -142,16 +198,14 @@ function matchGlob(pattern, value) {
 }
 
 function dedupePageInputs(inputs, options) {
-  const selected = new Map();
+  const groups = new Map();
   inputs.forEach((input) => {
     const relativePath = normalizeFilePath(input.relativePath);
     const pagePath = resolvePagePath(relativePath, options);
-    const current = selected.get(pagePath);
-    if (!current || relativePath.length < current.relativePath.length) {
-      selected.set(pagePath, { ...input, relativePath, pagePath });
-    }
+    if (!groups.has(pagePath)) groups.set(pagePath, []);
+    groups.get(pagePath).push({ ...input, relativePath, pagePath });
   });
-  return Array.from(selected.values()).sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return resolvePagePathConflicts(groups, options);
 }
 
 function filterPageModels(pageModels, options) {
@@ -182,35 +236,152 @@ function filterPageModels(pageModels, options) {
   return { included, excluded };
 }
 
+function decodeXmlEntities(value) {
+  return String(value)
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .trim();
+}
+
+function inspectSitemapContent(content) {
+  const source = String(content || '');
+  const isIndex = /<sitemapindex\b/i.test(source);
+  if (!isIndex && !/<urlset\b/i.test(source)) {
+    return null;
+  }
+  const locs = [];
+  const pattern = /<loc>\s*([\s\S]*?)\s*<\/loc>/gi;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    const loc = decodeXmlEntities(match[1]);
+    if (loc) locs.push(loc);
+  }
+  return { isIndex, locCount: locs.length, samples: locs.slice(0, 3) };
+}
+
 function findExistingSitemap(outputAssets = []) {
   const candidates = outputAssets
-    .filter(({ filename, content }) => (
-      /\.xml$/i.test(filename)
-      && /<(?:sitemapindex|urlset)\b/i.test(String(content || ''))
-    ))
+    .map(({ filename, content, source }) => {
+      const inspected = inspectSitemapContent(content);
+      if (!inspected) return null;
+      return {
+        filename: normalizeFilePath(filename),
+        locCount: inspected.locCount,
+        samples: inspected.samples,
+        isIndex: inspected.isIndex,
+        managed: String(content || '').includes(GENERATED_FILE_MARKER),
+        source: source || 'bundle',
+      };
+    })
+    .filter(Boolean)
     .sort((a, b) => {
-      const aIndex = /<sitemapindex\b/i.test(String(a.content || ''));
-      const bIndex = /<sitemapindex\b/i.test(String(b.content || ''));
-      if (aIndex !== bIndex) return aIndex ? -1 : 1;
+      if (a.isIndex !== b.isIndex) return a.isIndex ? -1 : 1;
       return a.filename.localeCompare(b.filename);
     });
-  return candidates[0]?.filename || null;
+  return candidates[0] || null;
+}
+
+function describeExistingSitemap(existing) {
+  const sourceLabel = existing.source === 'publicDir' ? 'publicDir' : '构建产物';
+  const locator = existing.samples.length > 0
+    ? `，样例：${existing.samples.join('、')}`
+    : '';
+  return `${existing.filename}（来源：${sourceLabel}，${existing.locCount} 条 <loc>${existing.managed ? '，由 vite-plugin-geo 生成' : '，疑似由其他插件生成'}${locator}）`;
+}
+
+function sitemapConflictError(existing) {
+  return new Error(
+    `Detected an existing sitemap ${describeExistingSitemap(existing)}. `
+    + "Another plugin (or a public/ file) generated it, and vite-plugin-geo will not overwrite it silently. "
+    + "Set sitemapConflict: 'overwrite' (CLI: --sitemap-conflict overwrite) to replace it, "
+    + "set sitemapConflict: 'preserve' to keep it, or remove the other sitemap generator.",
+  );
 }
 
 function resolveSitemapBehavior(options, outputAssets) {
-  const existingSitemap = findExistingSitemap(outputAssets);
+  const existing = findExistingSitemap(outputAssets);
   const sitemapUrlExplicit = typeof options.sitemapUrl === 'string' && options.sitemapUrl.trim() !== '';
-  const shouldGenerateSitemap = typeof options.generateSitemap === 'boolean'
+  const conflictPolicy = options.sitemapConflict;
+  const explicitGenerate = typeof options.generateSitemap === 'boolean'
     ? options.generateSitemap
-    : !existingSitemap;
+    : null;
+
+  let shouldGenerateSitemap;
+  let decision;
+  let reason;
+
+  if (explicitGenerate === false) {
+    shouldGenerateSitemap = false;
+    decision = 'disabled';
+    reason = 'generateSitemap=false';
+  } else if (!existing) {
+    shouldGenerateSitemap = true;
+    decision = 'generate';
+    reason = 'no existing sitemap detected';
+  } else if (conflictPolicy === 'error') {
+    throw sitemapConflictError(existing);
+  } else if (conflictPolicy === 'overwrite') {
+    shouldGenerateSitemap = true;
+    decision = 'overwrite';
+    reason = "sitemapConflict='overwrite'";
+  } else if (conflictPolicy === 'preserve') {
+    shouldGenerateSitemap = false;
+    decision = 'preserve';
+    reason = explicitGenerate === true
+      ? "sitemapConflict='preserve' overrides generateSitemap=true"
+      : "sitemapConflict='preserve'";
+  } else if (existing.managed) {
+    shouldGenerateSitemap = true;
+    decision = 'regenerate';
+    reason = 'existing sitemap was generated by vite-plugin-geo';
+  } else if (explicitGenerate === true) {
+    throw sitemapConflictError(existing);
+  } else {
+    shouldGenerateSitemap = false;
+    decision = 'preserve';
+    reason = 'auto-detected external sitemap; set sitemapConflict to change behavior';
+  }
+
   return {
-    detected: Boolean(existingSitemap),
+    detected: Boolean(existing),
+    existing,
+    decision,
+    reason,
     shouldGenerateSitemap,
     sitemapUrl: sitemapUrlExplicit
       ? options.sitemapUrl.trim()
-      : (existingSitemap || 'sitemap.xml'),
+      : (existing?.filename || 'sitemap.xml'),
     sitemapUrlExplicit,
   };
+}
+
+/**
+ * Log the detected sitemap and the decision taken, including samples so a
+ * silent skip never hides a third-party sitemap again.
+ */
+export function logSitemapCompatibility(compatibility, logger = console) {
+  if (!compatibility) return;
+  const { detected, existing, decision, reason, sitemapUrl } = compatibility;
+
+  if (!detected) {
+    logger.log(`[vite-plugin-geo] 未检测到现有 sitemap，将生成 ${sitemapUrl}。`);
+    return;
+  }
+
+  const detail = describeExistingSitemap(existing);
+  if (decision === 'preserve') {
+    logger.warn(`[vite-plugin-geo] 保留现有 sitemap：${detail}。原因：${reason}。`);
+  } else if (decision === 'overwrite') {
+    logger.warn(`[vite-plugin-geo] 覆盖现有 sitemap：${detail}。原因：${reason}。`);
+  } else if (decision === 'regenerate') {
+    logger.log(`[vite-plugin-geo] 重新生成 sitemap，替换先前的生成文件：${detail}。`);
+  } else if (decision === 'disabled') {
+    logger.log('[vite-plugin-geo] sitemap 生成已禁用（generateSitemap=false）。');
+  }
 }
 
 function validateStringArray(options, key, errors) {
@@ -243,6 +414,7 @@ export function validateGeoOptions(options = {}) {
     'generateSitemap',
     'debug',
     'audit',
+    'hreflangFromHtml',
   ];
   booleanOptions.forEach((key) => {
     if (options[key] !== undefined && typeof options[key] !== 'boolean') {
@@ -269,6 +441,13 @@ export function validateGeoOptions(options = {}) {
       errors.push(error.message);
     }
   }
+  if (typeof options.routeBasePath === 'string' && options.routeBasePath.trim()) {
+    try {
+      normalizeRouteBasePath(options.routeBasePath, { source: 'routeBasePath' });
+    } catch (error) {
+      errors.push(error.message);
+    }
+  }
   ['sitemapMaxBytes'].forEach((key) => {
     if (options[key] !== undefined && (typeof options[key] !== 'number' || !Number.isFinite(options[key]))) {
       errors.push(`Option '${key}' must be a finite number.`);
@@ -277,7 +456,7 @@ export function validateGeoOptions(options = {}) {
   if (options.sitemapMaxBytes !== undefined && options.sitemapMaxBytes <= 0) {
     errors.push("Option 'sitemapMaxBytes' must be greater than zero.");
   }
-  ['stripPathPrefixes', 'excludePatterns', 'robotsDirectives'].forEach(
+  ['stripPathPrefixes', 'excludePatterns', 'robotsDirectives', 'lastmodIgnore'].forEach(
     (key) => validateStringArray(options, key, errors),
   );
   if (options.lastmodStrategy !== undefined && !['none', 'file-mtime', 'build', 'git'].includes(options.lastmodStrategy)) {
@@ -285,6 +464,18 @@ export function validateGeoOptions(options = {}) {
   }
   if (options.llmsMdMirrorStyle !== undefined && !['append', 'replace'].includes(options.llmsMdMirrorStyle)) {
     errors.push("Option 'llmsMdMirrorStyle' must be one of: append, replace.");
+  }
+  if (options.sitemapConflict !== undefined && !['preserve', 'error', 'overwrite'].includes(options.sitemapConflict)) {
+    errors.push("Option 'sitemapConflict' must be one of: preserve, error, overwrite.");
+  }
+  if (options.routeConflict !== undefined && !['error', 'first', 'last'].includes(options.routeConflict)) {
+    errors.push("Option 'routeConflict' must be one of: error, first, last.");
+  }
+  if (options.auditFailOn !== undefined && !['warning', 'advice'].includes(options.auditFailOn)) {
+    errors.push("Option 'auditFailOn' must be one of: warning, advice.");
+  }
+  if (options.lastmodResolver !== undefined && typeof options.lastmodResolver !== 'function') {
+    errors.push("Option 'lastmodResolver' must be a function.");
   }
   if (options.llmsClassify !== undefined && typeof options.llmsClassify !== 'function') {
     errors.push("Option 'llmsClassify' must be a function.");
@@ -435,29 +626,82 @@ export function generateSkuMd(options, context) {
   return content;
 }
 
+function isLastmodIgnored(page, options) {
+  const patterns = Array.isArray(options.lastmodIgnore) ? options.lastmodIgnore : [];
+  return patterns.some((pattern) => (
+    matchGlob(pattern, page.relativePath) || matchGlob(pattern, page.pagePath || '')
+  ));
+}
+
+function resolvePageLastmod(page, distDir, options, currentDate, onWarning) {
+  if (typeof options.lastmodResolver === 'function') {
+    let resolved;
+    try {
+      resolved = options.lastmodResolver(page);
+    } catch (error) {
+      throw new Error(`lastmodResolver failed for ${page.relativePath}: ${error.message}`);
+    }
+    if (resolved === null) return null;
+    if (resolved instanceof Date) {
+      return Number.isNaN(resolved.getTime()) ? null : resolved.toISOString();
+    }
+    if (typeof resolved === 'string' && resolved.trim()) {
+      return resolved.trim();
+    }
+  }
+
+  const strategy = options.lastmodStrategy || 'none';
+  if (strategy === 'none' || isLastmodIgnored(page, options)) {
+    return null;
+  }
+
+  if (page.mtime) return page.mtime;
+
+  const sourcePath = resolveLastmodSourcePath(page.filePath, distDir, options);
+  return extractLastmod(
+    sourcePath || page.filePath,
+    strategy,
+    currentDate,
+    { onWarning },
+  );
+}
+
 function createPageModels(htmlInputs, distDir, options, currentDate) {
-  const dedupedInputs = dedupePageInputs(htmlInputs, options);
-  return dedupedInputs.map((input) => {
+  const { selected: dedupedInputs, conflicts } = dedupePageInputs(htmlInputs, options);
+  const lastmodWarnings = [];
+  const models = dedupedInputs.map((input) => {
     const analyzed = analyzeHtmlPage(input.htmlContent, { audit: options.audit !== false });
     const filePath = input.filePath || resolve(distDir, input.relativePath);
-    const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, options);
-    const lastmodStrategy = options.lastmodStrategy || 'none';
-    const mtime = lastmodStrategy === 'none'
-      ? null
-      : (input.mtime || extractLastmod(
-        mtimeSourcePath || filePath,
-        lastmodStrategy,
-        currentDate,
-      ));
-    return {
+    const relativePath = normalizeFilePath(input.relativePath);
+    const pagePath = resolvePagePath(input.relativePath, options);
+    const page = {
       ...input,
       ...analyzed,
       filePath,
-      relativePath: normalizeFilePath(input.relativePath),
-      pagePath: resolvePagePath(input.relativePath, options),
-      mtime,
+      relativePath,
+      pagePath,
+      mtime: input.mtime || null,
     };
+    page.mtime = resolvePageLastmod(page, distDir, options, currentDate, (message) => {
+      lastmodWarnings.push({ path: relativePath, message });
+    });
+    return page;
   });
+
+  if (lastmodWarnings.length > 0) {
+    if (options.debug === true) {
+      lastmodWarnings.forEach(({ message }) => console.warn(message));
+    } else {
+      const samples = lastmodWarnings.slice(0, 5).map(({ path }) => path).join('、');
+      const more = lastmodWarnings.length > 5 ? ` 等 ${lastmodWarnings.length} 个页面` : '';
+      console.warn(
+        `⚠️  [Non-fatal] Lastmod unavailable for ${lastmodWarnings.length} page(s) `
+        + `(strategy=${options.lastmodStrategy || 'none'}): ${samples}${more}. Enable debug for details.`,
+      );
+    }
+  }
+
+  return { models, conflicts };
 }
 
 function listExistingOutputAssets(distDir) {
@@ -510,6 +754,7 @@ export async function buildGeoGenerationPlan({
   const siteUrl = resolveSiteUrl(options, packageJson);
   const normalizedOptions = {
     ...options,
+    projectRoot,
     routeBasePath,
     stripPathPrefixes,
     sourceHtmlDir,
@@ -518,8 +763,17 @@ export async function buildGeoGenerationPlan({
     lastmodStrategy: options.lastmodStrategy || 'none',
     llmsMdMirrorStyle: options.llmsMdMirrorStyle || 'append',
   };
-  const allPageModels = createPageModels(htmlInputs, distDir, normalizedOptions, currentDate);
+  const { models: allPageModels, conflicts: routeConflicts } = createPageModels(
+    htmlInputs,
+    distDir,
+    normalizedOptions,
+    currentDate,
+  );
   const { included: pageModels, excluded } = filterPageModels(allPageModels, normalizedOptions);
+  const excludedDetails = excluded.map((page) => ({
+    path: page.relativePath,
+    reason: page.excludeReason || 'excluded',
+  }));
   (options.audit !== false ? allPageModels : pageModels).forEach((page) => {
     page.pageUrl = composePageUrl(siteUrl, page.pagePath, routeBasePath);
     if (options.audit !== false) {
@@ -537,6 +791,10 @@ export async function buildGeoGenerationPlan({
         totalHtmlFiles: allPageModels.length,
         includedHtmlFiles: 0,
         excludedHtmlFiles: excluded.length,
+        excludedDetails,
+        routeConflicts,
+        siteUrl,
+        routeBasePath,
         ...(options.audit !== false ? { audit: { checkedPages: 0, diagnostics: [] } } : {}),
       },
     };
@@ -570,7 +828,7 @@ export async function buildGeoGenerationPlan({
   pageModels.forEach((page) => {
     const pageUrl = page.pageUrl;
     const mirrorRelativePath = resolveMarkdownMirrorPath(
-      page.relativePath,
+      page.pagePath,
       normalizedOptions.llmsMdMirrorStyle,
     );
     const generatedMarkdownUrl = normalizedOptions.llmsMdMirror !== false
@@ -643,7 +901,8 @@ export async function buildGeoGenerationPlan({
       generatorOptions.sitemapUrl = resolveGeneratedSitemapUrl(sitemapFiles);
     }
     sitemapFiles.forEach(({ filename, content }) => addFile(filename, content, {
-      markManaged: false,
+      markManaged: true,
+      protectExisting: false,
     }));
   }
 
@@ -741,6 +1000,10 @@ export async function buildGeoGenerationPlan({
       totalHtmlFiles: allPageModels.length,
       includedHtmlFiles: pageModels.length,
       excludedHtmlFiles: excluded.length,
+      excludedDetails,
+      routeConflicts,
+      siteUrl,
+      routeBasePath,
       sitemapCompatibility,
       robotsCompatibility,
       ...(options.audit !== false ? { audit: auditGeoPlan({

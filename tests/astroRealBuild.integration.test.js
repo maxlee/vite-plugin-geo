@@ -103,7 +103,7 @@ describe('real Astro builds', () => {
       expect(llms).toContain('https://example.com/robots.txt');
       expect(existsSync(join(distDir, 'sitemap.xml'))).toBe(false);
       expect(existsSync(join(distDir, 'feed.xml'))).toBe(true);
-      expect(existsSync(join(distDir, 'index.html.md'))).toBe(true);
+      expect(existsSync(join(distDir, 'index.md'))).toBe(true);
       expect(readFileSync(join(distDir, 'index.html'), 'utf-8')).toContain('application/rss+xml');
     }
   }, 30_000);

@@ -38,7 +38,7 @@ describe('existing robots compatibility', () => {
     const plan = await planFor(context);
     expect(plan.report.robotsCompatibility).toEqual({ preserved: true, directivesIgnored: false });
     expect(plan.files.map(file => file.filename)).not.toContain('robots.txt');
-    expect(plan.files.map(file => file.filename)).toEqual(expect.arrayContaining(['sitemap.xml', 'llms.txt', 'feed.xml', 'index.html.md']));
+    expect(plan.files.map(file => file.filename)).toEqual(expect.arrayContaining(['sitemap.xml', 'llms.txt', 'feed.xml', 'index.md']));
     expect(plan.files.find(file => file.filename === 'llms.txt').content).toContain('https://example.com/robots.txt');
     applyGeoGenerationPlanToDisk(plan, context);
     expect(readFileSync(join(context.distDir, 'robots.txt'))).toEqual(robots);

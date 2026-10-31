@@ -43,8 +43,8 @@ describe('shared GEO generation pipeline', () => {
       'llms.txt',
       'robots.txt',
       'feed.xml',
-      'index.html.md',
-      'about.html.md',
+      'index.md',
+      'about.md',
     ]));
     expect(plan.htmlUpdates).toHaveLength(2);
     expect(existsSync(join(distDir, 'llms.txt'))).toBe(false);

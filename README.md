@@ -2,7 +2,7 @@
 
 一个面向 Vite 与 Astro 静态站点的构建后插件，自动生成 Sitemap、robots.txt、RSS、llms.txt 和页面 Markdown 镜像。
 
-当前版本：`vite-plugin-geo@0.1.5`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Astro 7 是可选 Astro peer，纯 Vite 项目无需安装 Astro。
+当前版本：`vite-plugin-geo@0.2.0`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Astro 7 是可选 Astro peer，纯 Vite 项目无需安装 Astro。
 
 > 这些文件用于机器发现和抓取提示，不证明任何搜索引擎、AI 产品或模型会读取、采用、索引或优先展示内容，也不承诺排名、收录或转化效果。
 
@@ -16,7 +16,7 @@
 - 🌐 **多语言支持** — Sitemap hreflang 映射
 - 👥 **humans.txt** — 可选生成，只输出可确认信息
 - 🛍️ **SKU.md** — 可选生成 `1.0.0-beta` 纯 Markdown 根清单
-- 🔎 **构建诊断** — 默认在终端提示静态页面问题与改进建议，不因诊断发现中断构建
+- 🔎 **构建诊断** — 默认在终端提示静态页面问题与改进建议，默认不中断构建，可按需设置 CI 门禁；另有 `verify` 子命令校验最终产物
 - 🧱 **统一行为** — Vite、Astro 和 CLI 共用同一套校验、规划与写入规则
 
 ## 📦 安装
@@ -97,8 +97,8 @@ dist/
 ├── robots.txt
 ├── feed.xml
 ├── llms.txt
-├── index.html.md
-└── ...其他页面.html.md
+├── index.md
+└── ...其他页面.md
 ```
 
 ## 📄 输出文件
@@ -109,7 +109,7 @@ dist/
 | `robots.txt` | 自动 | 默认保留已有手写文件；无文件时根作用域生成，非根作用域关闭；始终位于站点根目录 |
 | `feed.xml` | ✅ | RSS 2.0 订阅源，并向 HTML 注入 discovery link |
 | `llms.txt` | ✅ | 当前单一作用域的 llms.txt v2 内容索引 |
-| `*.html.md` / `*.md` | ✅ | 默认 append，可改为 replace 风格 |
+| `*.md` | ✅ | 基于公开 pagePath 的 Markdown 镜像，默认 append，可改为 replace 风格 |
 | `humans.txt` | ❌ | 可确认的团队、版权和技术信息 |
 | `sku.md` | ❌ | SKU.md `1.0.0-beta` 根目录发现清单 |
 | `sitemap_index.xml` | 🔀 | Sitemap 超限时按配置自动生成 |
@@ -126,11 +126,14 @@ dist/
 | `prettyUrls` | `boolean` | `true` | 页面公开 URL 是否移除 `.html` |
 | `lastmodStrategy` | `'none' \| 'file-mtime' \| 'build' \| 'git'` | `'none'` | Sitemap 与 RSS 条目时间来源 |
 | `excludePatterns` | `string[]` | `['404.html', '500.html']` | 排除页面规则 |
-| `hreflang` | `Record<string, string>` | — | Sitemap 多语言映射 |
+| `hreflang` | `Record<string, string>` | — | Sitemap 全局多语言映射 |
+| `hreflangFromHtml` | `boolean` | `false` | 从每页 HTML 的 `rel="alternate"` + `hreflang` 声明生成 sitemap `xhtml:link`；未声明的页面回退到 `hreflang` |
 | `generateSitemap` | `boolean` | 自动 | 检测到已有 Sitemap 时默认关闭 |
+| `sitemapConflict` | `'preserve' \| 'error' \| 'overwrite'` | 自动 | 检测到外部 Sitemap 时的处理策略；未设置且自动模式时保留并告警 |
 | `sitemapUrl` | `string` | 自动 | robots.txt / llms.txt 引用的 Sitemap 地址 |
+| `routeConflict` | `'error' \| 'first' \| 'last'` | `'error'` | 多个 HTML 映射到同一公开路由时抛错或确定性选择 |
 | `llmsMdMirror` | `boolean` | `true` | 是否为缺少 alternate 的页面生成 Markdown 镜像 |
-| `llmsMdMirrorStyle` | `'append' \| 'replace'` | `'append'` | `about.html.md` 或 `about.md` |
+| `llmsMdMirrorStyle` | `'append' \| 'replace'` | `'append'` | 公开路径派生镜像：`about` 均生成 `about.md`；`prettyUrls: false` 时 append 为 `about.html.md`、replace 为 `about.md` |
 | `llmsClassify` | `function` | 自动 | 自定义 llms.txt 页面分区 |
 | `llmsSections` | `Record<string, string \| string[]>` | 自动 | 按路径片段配置 llms.txt 分区 |
 | `generateRobots` | `boolean` | 自动 | 默认保留已有手写文件，否则按作用域生成；显式 `true` 与手写文件冲突时失败 |
@@ -139,7 +142,8 @@ dist/
 | `generateHumans` | `boolean` | `false` | humans.txt 开关 |
 | `skuMd` | `SkuMdOptions` | — | SKU.md 根清单配置 |
 | `audit` | `boolean` | `true` | 构建诊断；关闭后跳过额外检查 |
-| `debug` | `boolean` | `false` | 输出生成摘要 |
+| `auditFailOn` | `'warning' \| 'advice'` | 关闭 | 诊断达到该严重级别时使构建失败；未设置时永不失败 |
+| `debug` | `boolean` | `false` | 输出最终配置、sitemap 决策、镜像与产物摘要 |
 
 <details>
 <summary>📋 查看完整配置项</summary>
@@ -151,6 +155,8 @@ dist/
 | `packageJsonPath` | `string \| false` | `'./package.json'` | 项目元数据路径；`false` 表示不读取 |
 | `sitemapIndex` | `boolean` | `true` | 是否允许自动拆分 Sitemap |
 | `sitemapMaxBytes` | `number` | `52428800` | 单个未压缩 Sitemap 的字节上限，不能超过 50 MiB |
+| `lastmodIgnore` | `string[]` | `[]` | 跳过 lastmod 解析的 glob（匹配相对路径或公开 pagePath） |
+| `lastmodResolver` | `function` | — | 仅插件 API：`(page) => Date \| string \| null \| undefined`，`null` 省略 lastmod，`undefined` 继续按策略解析 |
 | `skuMd.merchantName` | `string` | 首页真实标题 | 商户名称；无法可靠推导时构建失败 |
 | `skuMd.summary` | `string` | 首页真实描述 | 商户摘要；无法可靠推导时构建失败 |
 | `skuMd.catalog` | `{ label; url }[]` | 必填 | 至少一个同源 HTTPS 目录链接 |
@@ -176,18 +182,21 @@ export default defineConfig({
 
 插件在 Astro 的最终构建阶段检查真实 Sitemap 产物：
 
-- 跳过重复的 Sitemap 生成；
+- 检测到外部 Sitemap 时默认保留，并打印文件名、来源、loc 数量、前 3 条样例与判定原因；
 - 继续生成 llms.txt、robots.txt、RSS 等已开启文件；
 - 让 robots.txt 和 llms.txt 指向实际发现的 Sitemap，包括自定义 `filenameBase`。
 
-需要手动覆盖时，可以使用：
+需要手动接管时，必须同时声明冲突策略；仅设置 `generateSitemap: true` 会报错并点名疑似第三方 Sitemap：
 
 ```js
 geo({
   generateSitemap: true,
+  sitemapConflict: 'overwrite',
   sitemapUrl: 'sitemap.xml',
 })
 ```
+
+也可以使用 `sitemapConflict: 'error'` 让任何外部 Sitemap 直接失败，或用 `'preserve'` 显式保留。
 
 ## 🔧 CLI 命令
 
@@ -208,6 +217,30 @@ vite-plugin-geo generate \
 
 # 使用 JSON 配置文件
 vite-plugin-geo generate --config ./geo.config.json
+
+# 构建后校验最终产物（只读 dist）
+vite-plugin-geo verify --dist-dir dist --domain https://example.com
+vite-plugin-geo verify --dist-dir dist --report json > geo-report.json
+vite-plugin-geo verify --dist-dir dist --report sarif --report-file geo.sarif
+vite-plugin-geo verify --dist-dir dist --fail-on-verify warning
+
+# 生成后立即校验，并让诊断门禁生效
+vite-plugin-geo generate --verify --fail-on-audit warning
+```
+
+`verify` 读取最终 `dist`，不受第三方 `closeBundle` 写入时序影响，也不会写入任何文件。它检查：sitemap `<loc>` 数量、首页、中间构建前缀、`.html` 扩展名、重复 loc、loc 与产物文件映射、`robots.txt` 的 `Sitemap:`、canonical、llms.txt、feed.xml 与 Markdown 镜像一致性。Sitemap 索引会递归解析（最多 5 层）。
+
+`--fail-on-verify` 默认 `error`；`--fail-on-verify warning` 把警告也作为硬门禁；`--fail-on-verify none` 只报告。`--report json` 输出带 `schemaVersion: "1.0"` 的机器可读报告，`--report sarif` 输出 SARIF 2.1.0。报告写到 stdout 时，人类可读日志自动转到 stderr，保证 stdout 可直接管道解析。`--report-file` 可改为写入文件。
+
+CI 示例（GitHub Actions）：
+
+```yaml
+- run: npm run build
+- run: npx vite-plugin-geo verify --dist-dir dist --domain https://example.com --report sarif --report-file geo.sarif --fail-on-verify warning
+- uses: github/codeql-action/upload-sarif@v3
+  if: always()
+  with:
+    sarif_file: geo.sarif
 ```
 
 Astro 构建串联请参阅上方“[Astro 项目](#astro-项目)”中的“方式二：构建后串联 CLI”。
@@ -227,9 +260,18 @@ Astro 构建串联请参阅上方“[Astro 项目](#astro-项目)”中的“方
 | `--strip-path-prefixes <list>` | 逗号分隔的路径前缀 |
 | `--exclude-patterns <list>` | 逗号分隔的排除规则 |
 | `--lastmod-strategy <value>` | `none`、`file-mtime`、`build` 或 `git` |
+| `--lastmod-ignore <list>` | 逗号分隔的 lastmod 跳过规则 |
 | `--llms-md-mirror-style <value>` | `append` 或 `replace` |
 | `--robots-directives <list>` | 逗号分隔的通用 robots 指令 |
 | `--sitemap-url <path-or-url>` | robots.txt / llms.txt 引用的 Sitemap 地址 |
+| `--sitemap-conflict <mode>` | `preserve`、`error` 或 `overwrite` |
+| `--route-conflict <mode>` | `error`、`first` 或 `last` |
+| `--hreflang-from-html / --no-hreflang-from-html` | 逐页 hreflang 开关 |
+| `--fail-on-audit <level>` | `none`、`warning` 或 `advice`，默认 `none` |
+| `--fail-on-verify <level>` | `none`、`error` 或 `warning`，默认 `error` |
+| `--report <json\|sarif>` | 输出机器可读报告 |
+| `--report-file <path>` | 报告写入文件（默认 stdout） |
+| `--verify` | `generate` 完成后立即运行 verify |
 | `--pretty-urls / --no-pretty-urls` | URL 模式开关 |
 | `--sitemap-index / --no-sitemap-index` | Sitemap 自动拆分开关 |
 | `--generate-sitemap / --no-generate-sitemap` | Sitemap 生成开关 |
@@ -245,9 +287,11 @@ Astro 构建串联请参阅上方“[Astro 项目](#astro-项目)”中的“方
 
 </details>
 
-## 🔎 构建诊断（0.1.5）
+## 🔎 构建诊断与门禁（0.2.0）
 
-Vite、Astro 和 CLI 默认开启 `audit: true`。警告与建议直接显示在构建终端，无需开启 `debug`；每项包含页面路径、规则、发现依据和处理建议，按页面路径和规则稳定排序，完整列出发现项。诊断不新增报告文件，不自动修改页面，也不改变现有文件生成默认值。诊断发现不会使构建失败；原有配置错误、文件冲突和读写失败仍按原有规则处理。
+Vite、Astro 和 CLI 默认开启 `audit: true`。警告与建议直接显示在构建终端，无需开启 `debug`；每项包含页面路径、规则、发现依据和处理建议，按页面路径和规则稳定排序，完整列出发现项。诊断不新增报告文件，不自动修改页面，也不改变现有文件生成默认值。
+
+默认情况下诊断发现不会使构建失败；设置 `auditFailOn: 'warning' | 'advice'`（CLI：`--fail-on-audit`）后，达到阈值的发现会在写入产物前中止构建。原有配置错误、文件冲突和读写失败仍按原有规则处理。
 
 | 检查项 | 提示内容与边界 |
 |---|---|
@@ -260,13 +304,18 @@ Vite、Astro 和 CLI 默认开启 `audit: true`。警告与建议直接显示在
 | 图片 | 缺少 `alt` 属性；允许装饰图片使用 `alt=""` |
 | 首页元数据 | 提醒站点元数据使用了回退值，便于核对标题和描述 |
 | 本地引用 | 检查链接、canonical、hreflang 是否指向已知 `noindex` 页面；本地目标缺失时提示“构建产物中未找到，需确认线上路由” |
+| `.html` 站内链接 | `prettyUrls` 开启时，指向已知页面却仍以 `.html` 结尾的站内链接 |
+| Markdown 镜像路径 | 镜像地址包含 `src/pages/` 等中间前缀，或 pretty URLs 下出现 `x.html.md` 双扩展名 |
+| 孤儿页面 | 构建产物中没有任何其他页面静态链接指向的非首页 |
+| hreflang 互指 | 页面声明了 hreflang，但目标页面没有指回 |
+| hreflang 自引用 | 页面声明了 hreflang，却缺少指向自身的条目 |
 | 生成文件与发现链接 | 检查本次生成计划中的引用，以及页面中的 Markdown、llms.txt、RSS 发现链接是否一致 |
 
 基础检查只针对纳入本次生成的页面。引用检查会利用扫描中已知的 `noindex` 页面，但不会对被排除页面进行完整内容诊断。相对地址会结合页面 `<base href>` 和公开路径作用域解析；没有找到静态文件不等于线上 404，动态路由、重写与重定向需在部署环境确认。
 
 canonical 的处理依据 [Google canonical 指南](https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls)：推荐绝对地址，但相对地址可以解析；跨域 canonical 也可能有合理用途。诊断只提示核对，不把它们一概判为错误。
 
-此功能不发送 HTTP 请求，不验证线上状态码、响应头、CDN 或防火墙，不完整审计第三方 Sitemap/XML，不模拟 robots 匹配引擎，也不检查跨站 hreflang 回链。
+此功能不发送 HTTP 请求，不验证线上状态码、响应头、CDN 或防火墙，不完整审计第三方 Sitemap/XML，不模拟 robots 匹配引擎；跨站 hreflang 只检查站内目标是否能被解析。
 
 终端示例（同页缺少 `alt` 的图片合并计数）：
 
@@ -287,6 +336,16 @@ geo({ domain: 'https://example.com', audit: false })
 vite-plugin-geo generate --no-audit
 # 等价写法
 vite-plugin-geo generate --audit=false
+```
+
+将诊断作为 CI 硬门禁：
+
+```js
+geo({ domain: 'https://example.com', audit: true, auditFailOn: 'warning' })
+```
+
+```bash
+vite-plugin-geo generate --fail-on-audit warning --report json --report-file geo.json
 ```
 
 ## 📝 行为契约
@@ -322,7 +381,7 @@ llms.txt v2 是 2026-08-10 更新的社区提案，不是正式 Web 标准。v0.
 - 每个收录页面注入 `rel="describedby" type="text/markdown"`，指向当前作用域的 llms.txt；
 - 缺少 Markdown alternate 时生成镜像，并注入 `rel="alternate" type="text/markdown"`；
 - 已有有效 Markdown alternate 时保留原标签，在 llms.txt 中采用第一个有效地址，不重复生成镜像；
-- append 默认生成 `about.html.md`，replace 生成 `about.md`；
+- 镜像路径由公开 pagePath 派生：pretty URLs 下 `about` → `about.md`；`prettyUrls: false` 时 append 为 `about.html.md`、replace 为 `about.md`；不会出现 `src/pages/` 等中间路径；
 - `routeBasePath: '/docs/'` 生成 `/docs/llms.txt`，但不会自动创建更深层作用域；
 - `noindex`、404 / 500 和匹配 `excludePatterns` 的页面不注入、不收录；
 - 重复执行不追加重复标签，目标路径与手写文件冲突时构建停止。
@@ -459,6 +518,35 @@ geo({
 | [WebMCP Draft Community Group Report](https://webmachinelearning.github.io/webmcp/) | 浏览器运行时工具 API，不是静态规范文件，也不是 W3C 标准或标准轨道文档 |
 
 v0.1.4 不会生成以上文件，也不会把它们映射成 robots.txt 或 llms.txt 的别名。
+
+## 🆕 0.2.0 发布说明
+
+这是一次有意的破坏性版本：修正会静默产出错误站点的默认行为，并提供把结果当作 CI 门禁的能力。
+
+**迁移要点**
+
+1. **Markdown 镜像改用公开路径**：pretty URLs 下 `about.html` 的镜像由 `about.html.md` 变为 `about.md`；首页镜像统一为 `index.md`。生成文件、`llms.txt` 链接和注入的 alternate 使用同一个解析器。若已部署旧镜像，请同步更新外部引用。
+2. **重复路由默认抛错**：多个 HTML 映射到同一公开地址时构建失败并列出冲突文件。需要保留旧行为时显式设置 `routeConflict: 'first'` 或 `'last'`，构建会打印保留的文件。
+3. **绝对 URL 的 Vite/Astro `base` 抛错**：`base: 'https://cdn.example.com/'` 之类不再被拼成 `/https:/...`；请显式设置 `routeBasePath`。
+4. **外部 Sitemap 冲突默认保留并告警**：检测到第三方 Sitemap 时会打印文件名、来源、loc 数量与前 3 条样例。需要接管时设置 `sitemapConflict: 'overwrite'`；显式 `generateSitemap: true` 且未设置策略时会报错并点名“疑似由其他插件生成”。
+5. **审计仍默认不失败**：只有设置 `auditFailOn` / `--fail-on-audit` 才会阻断构建。
+
+**新增能力**
+
+- `vite-plugin-geo verify`：只读最终 `dist`，校验 Sitemap、robots、canonical、llms.txt、feed 与 Markdown 镜像的一致性；
+- `--report json|sarif`：JSON 报告带 `schemaVersion: "1.0"`，另提供 SARIF 2.1.0；
+- `--fail-on-audit`、`--fail-on-verify`、`--verify`：覆盖生成与校验的 CI 门禁；
+- `hreflangFromHtml`：逐页读取 HTML alternate 并生成 sitemap `xhtml:link`，自动补自引用，不虚构 `x-default`；
+- `lastmodIgnore`、`lastmodResolver`：跳过生成页并支持项目自定义时间；Git 缺失告警聚合为一条；
+- 新审计规则：`.html` 站内链接、镜像路径、孤儿页面、hreflang 互指与自引用；
+- `debug: true` 输出最终 `siteUrl`、`routeBasePath`、页面/排除原因、Sitemap 决策、镜像与产物摘要；
+- `public/` 中的受管文件与 Sitemap 现在参与冲突检测。
+
+**部署检查清单**
+
+- 主机软 404：Cloudflare Pages 只有在产物根目录存在 `404.html` 时才对未知路径返回真实 404，否则回退为 `200 + 首页`，会把坏 Sitemap 中的每条 URL 伪装成首页副本。请确认构建产物包含 `404.html`，或用 `verify` 校验 loc 与产物映射。
+- 不要与任何在 `closeBundle` 中写 Sitemap 的插件共存；`geo` 在 `generateBundle` 写入后无法阻止后续覆盖。`verify` 是唯一不受该时序影响的安全网，建议放入 CI。
+- 多 output、`build.ssr`、`build.lib`、`--watch` 与可复现构建时间（`SOURCE_DATE_EPOCH` / feed 过滤）尚未覆盖，计划在 0.3.0 处理。
 
 ## 🆕 0.1.5 发布说明
 

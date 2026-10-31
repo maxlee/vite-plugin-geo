@@ -57,7 +57,7 @@ describe('real Vite builds', () => {
     expect(existsSync(join(distDir, 'sitemap.xml'))).toBe(true);
     expect(existsSync(join(distDir, 'robots.txt'))).toBe(true);
     expect(existsSync(join(distDir, 'llms.txt'))).toBe(true);
-    expect(existsSync(join(distDir, 'index.html.md'))).toBe(true);
+    expect(existsSync(join(distDir, 'index.md'))).toBe(true);
     expect(existsSync(join(distDir, 'sku.md'))).toBe(true);
     expect(readFileSync(join(distDir, 'sitemap.xml'), 'utf-8')).not.toContain('<lastmod>');
   }, 20_000);

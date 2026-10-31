@@ -48,6 +48,19 @@ function validLang(value) {
   try { return Intl.getCanonicalLocales(value).length === 1; } catch { return false; }
 }
 
+const HTML_EXTENSION_LINK = /^[^?#]*\.html?([?#]|$)/i;
+const DOUBLE_EXTENSION_MIRROR = /\.html?\.md$/i;
+
+function routePrefixes(options) {
+  return (options.stripPathPrefixes || ['src/pages/'])
+    .map((prefix) => String(prefix).replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean);
+}
+
+function containsRoutePrefix(pathname, prefixes) {
+  return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
 export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], existingFiles = [], options = {}, siteUrl, sitemapGenerated = false, discoveryByPath = new Map() }) {
   const diagnostics = [];
   const add = (page, rule, severity, evidence, suggestion) => diagnostics.push({ path: page.relativePath, rule, severity, evidence, suggestion });
@@ -117,6 +130,35 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
       checkTarget(page, href, base, 'canonical');
     }
     if (canonicalUrls.size > 1) add(page, 'canonical-conflict', 'warning', `存在不同 canonical：${[...canonicalUrls].sort(compare).join('、')}`, '仅保留一个首选地址。');
+    const prefixes = routePrefixes(options);
+    const checkMirrorPath = (href, label) => {
+      const url = httpUrl(href, base);
+      if (!url || !inScope(url)) return;
+      let pathname = url.pathname.replace(/^\/+/, '');
+      try { pathname = decodeURIComponent(pathname); } catch { /* keep raw */ }
+      if (containsRoutePrefix(pathname, prefixes)
+        || (options.prettyUrls !== false && DOUBLE_EXTENSION_MIRROR.test(pathname))) {
+        add(page, 'markdown-mirror-path', 'warning', `${label}使用了非公开镜像路径：${href}`, '镜像地址应基于公开页面路径，不能包含中间构建目录或双扩展名。');
+      }
+    };
+    if (options.prettyUrls !== false) {
+      for (const anchor of facts.anchors || []) {
+        if (anchor.download) continue;
+        const href = String(anchor.href || '').trim();
+        if (!href || !HTML_EXTENSION_LINK.test(href)) continue;
+        const url = httpUrl(href, base);
+        if (!url || !inScope(url) || !targets.has(key(url))) continue;
+        add(page, 'internal-link-html-extension', 'warning', `站内链接使用了 .html 地址：${href}`, '改用无扩展名的公开地址，避免历史 .html 路由进入抓取路径。');
+      }
+    }
+    if (options.llmsMdMirror !== false) {
+      for (const link of facts.links || []) {
+        if (tokens(link.rel).includes('alternate') && String(link.type).toLowerCase() === 'text/markdown') {
+          checkMirrorPath(link.href, 'Markdown alternate ');
+        }
+      }
+      if (page.markdownUrl) checkMirrorPath(page.markdownUrl, 'Markdown 镜像 ');
+    }
     for (const anchor of facts.anchors || []) if (!anchor.download) checkTarget(page, anchor.href, base, 'anchor', true);
     for (const link of facts.links || []) if (link.hreflang && tokens(link.rel).includes('alternate')) checkTarget(page, link.href, base, 'hreflang');
     for (const pattern of Object.values(options.hreflang || {})) {
@@ -144,14 +186,126 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
       if (!page[field]) add(page, `home-${field}-fallback`, 'advice', `首页 ${field} 为空，站点信息使用默认值`, `填写首页 ${field}，避免默认站点信息。`);
     }
   }
+  // Cross-page rules: inbound links (orphans) and hreflang reciprocity.
+  const inbound = new Map();
+  const declarations = new Map();
+  const aliasKeys = (page) => [page.pageUrl, page.filePageUrl]
+    .filter(Boolean)
+    .map((value) => { const url = httpUrl(value); return url ? key(url) : null; })
+    .filter(Boolean);
+
+  for (const page of pages) {
+    const facts = page.audit || {};
+    const base = documentBase(facts, page.filePageUrl || page.pageUrl);
+    for (const anchor of facts.anchors || []) {
+      if (anchor.download) continue;
+      const url = httpUrl(anchor.href, base);
+      if (!url || !inScope(url)) continue;
+      if (!inbound.has(key(url))) inbound.set(key(url), new Set());
+      inbound.get(key(url)).add(page.relativePath);
+    }
+    const declared = [];
+    for (const link of facts.links || []) {
+      if (!tokens(link.rel).includes('alternate') || !String(link.hreflang || '').trim()) continue;
+      const url = httpUrl(link.href, base);
+      if (url) declared.push(key(url));
+    }
+    if (declared.length > 0) declarations.set(page.relativePath, { page, declared });
+  }
+
+  for (const page of pages) {
+    const aliases = aliasKeys(page);
+    // The home page is the entry point; orphan checks target inner pages only.
+    if (page.pagePath === '' || page === homePage || aliases.includes(key(routeRoot))) continue;
+    const hasInbound = aliases.some((aliasKey) => {
+      const sources = inbound.get(aliasKey);
+      return sources && [...sources].some((source) => source !== page.relativePath);
+    });
+    if (!hasInbound) add(page, 'orphan-page', 'advice', '构建产物中没有任何其他页面静态链接到该页面', '在导航或索引页添加静态链接，提升可抓取性。');
+  }
+
+  for (const { page, declared } of declarations.values()) {
+    const aliases = aliasKeys(page);
+    if (!declared.some((targetKey) => aliases.includes(targetKey))) {
+      add(page, 'hreflang-self-reference', 'advice', 'hreflang 声明中缺少指向自身的条目', '补充自引用 hreflang，或确认声明的完整性。');
+    }
+    for (const targetKey of declared) {
+      if (aliases.includes(targetKey)) continue;
+      const targetPage = targets.get(targetKey);
+      if (!targetPage || targetPage === page) continue;
+      const targetDeclarations = declarations.get(targetPage.relativePath)?.declared || [];
+      const reciprocated = aliases.some((aliasKey) => targetDeclarations.includes(aliasKey));
+      if (!reciprocated) {
+        add(page, 'hreflang-reciprocity', 'warning', `hreflang 指向 ${targetPage.relativePath}，但该页面没有指回`, '确保各语言版本互相声明 hreflang。');
+      }
+    }
+  }
+
   for (const [rule, groups, severity] of [['title-duplicate', titleGroups, 'warning'], ['description-duplicate', descriptionGroups, 'advice']]) for (const [value, group] of groups) if (group.length > 1) for (const page of group) add(page, rule, severity, `内容重复「${value}」：${group.map((entry) => entry.relativePath).sort(compare).join('、')}`, '为不同页面提供能区分内容的说明。');
   const unique = [...new Map(diagnostics.map((item) => [JSON.stringify(item), item])).values()];
   unique.sort((a, b) => compare(a.path, b.path) || compare(a.rule, b.rule) || compare(a.evidence, b.evidence));
   return { checkedPages: pages.length, diagnostics: unique };
 }
 
-function safeText(value) {
+export function safeText(value) {
   return String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/** Count audit diagnostics by severity. */
+export function countAuditFindings(audit) {
+  const diagnostics = audit?.diagnostics || [];
+  return {
+    warnings: diagnostics.filter((item) => item.severity === 'warning').length,
+    advice: diagnostics.filter((item) => item.severity === 'advice').length,
+    total: diagnostics.length,
+  };
+}
+
+/**
+ * Decide whether the audit gate should fail.
+ * `warning` fails on warnings and advice; `advice` fails on any finding.
+ */
+export function auditFailures(audit, failOn) {
+  const counts = countAuditFindings(audit);
+  if (failOn === 'warning') return counts.warnings > 0;
+  if (failOn === 'advice') return counts.warnings + counts.advice > 0;
+  return false;
+}
+
+/** Throw when the audit gate is configured and findings exceed the threshold. */
+export function assertAuditGate(audit, failOn) {
+  if (!auditFailures(audit, failOn)) return;
+  const counts = countAuditFindings(audit);
+  throw new Error(
+    `GEO audit gate failed (failOn=${failOn}): ${counts.warnings} warning(s), ${counts.advice} advice item(s). `
+    + 'Remove the findings or lower auditFailOn / --fail-on-audit.',
+  );
+}
+
+/** Count verify diagnostics by severity. */
+export function countVerifyFindings(verify) {
+  return {
+    errors: verify?.errors?.length || 0,
+    warnings: verify?.warnings?.length || 0,
+  };
+}
+
+/** `error` (default) fails on verify errors; `warning` fails on any finding. */
+export function verifyFailures(verify, failOn = 'error') {
+  const counts = countVerifyFindings(verify);
+  if (failOn === 'warning') return counts.errors + counts.warnings > 0;
+  if (failOn === 'none') return false;
+  return counts.errors > 0;
+}
+
+/** Throw when the verify gate is configured and findings exceed the threshold. */
+export function assertVerifyGate(verify, failOn = 'error') {
+  if (!verifyFailures(verify, failOn)) return;
+  const counts = countVerifyFindings(verify);
+  throw new Error(
+    `GEO verify gate failed (failOn=${failOn}): ${counts.errors} error(s), ${counts.warnings} warning(s). `
+    + 'Run vite-plugin-geo verify --report json for details.',
+  );
 }
 export function logGeoAudit(report, logger) {
   if (!report || !logger) return;
