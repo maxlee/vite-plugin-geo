@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { build as buildVite7 } from 'vite7';
@@ -106,6 +106,82 @@ describe('real Vite builds', () => {
       });
       expect(readFileSync(join(root, 'dist/robots.txt'), 'utf-8')).toBe(robots);
       expect(readFileSync(join(root, 'dist/llms.txt'), 'utf-8')).toContain('https://example.com/robots.txt');
+    }, 20_000);
+
+    it('preserves public companion files and mirror collisions by default', async () => {
+      const root = join(fixtureRoot, `${label}-public-companions`.replace(/\s+/g, '-'));
+      const publicFiles = {
+        'public/llms.txt': '# User llms\n',
+        'public/feed.xml': '<rss>User feed</rss>',
+        'public/humans.txt': 'User humans\n',
+        'public/sku.md': '# User SKU\n',
+        'public/about.md': '# User About\n',
+      };
+      writeFixture(root, 'package.json', JSON.stringify({ name: 'public-companions', domain: 'https://example.com' }));
+      writeFixture(root, 'index.html', '<html lang="en"><head><title>Home</title><meta name="description" content="Home"></head><body><h1>Home</h1></body></html>');
+      writeFixture(root, 'about.html', '<html lang="en"><head><title>About</title><meta name="description" content="About"></head><body><h1>About</h1></body></html>');
+      Object.entries(publicFiles).forEach(([path, content]) => writeFixture(root, path, content));
+
+      const warnings = [];
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args) => warnings.push(args.join(' ')));
+      try {
+        for (let build = 0; build < 2; build += 1) {
+          await viteBuild({
+            root, configFile: false, logLevel: 'silent',
+            plugins: [createGeoGeneratorPlugin({
+              audit: false,
+              generateHumans: true,
+              skuMd: {
+                merchantName: 'Public Store',
+                summary: 'Public store',
+                catalog: [{ label: 'Home', url: 'https://example.com/' }],
+              },
+            })],
+            build: {
+              outDir: join(root, 'dist'),
+              emptyOutDir: true,
+              rollupOptions: { input: [join(root, 'index.html'), join(root, 'about.html')] },
+            },
+          });
+
+          Object.entries(publicFiles).forEach(([path, content]) => {
+            expect(readFileSync(join(root, 'dist', path.replace(/^public\//, '')), 'utf-8')).toBe(content);
+          });
+          expect(existsSync(join(root, 'dist/sitemap.xml'))).toBe(true);
+          expect(existsSync(join(root, 'dist/robots.txt'))).toBe(true);
+          expect(existsSync(join(root, 'dist/index.md'))).toBe(true);
+          expect(readFileSync(join(root, 'dist/index.html'), 'utf-8')).toContain('application/rss+xml');
+        }
+      } finally {
+        warnSpy.mockRestore();
+      }
+      expect(warnings.join('\n')).toMatch(/Preserved .*about\.md/i);
+    }, 30_000);
+
+    it('preserves llms.txt and feed.xml emitted by another bundle plugin', async () => {
+      const root = join(fixtureRoot, `${label}-bundled-companions`.replace(/\s+/g, '-'));
+      const llms = '# Bundle llms\n';
+      const feed = '<rss>Bundle feed</rss>';
+      writeFixture(root, 'package.json', JSON.stringify({ name: 'bundled-companions', domain: 'https://example.com' }));
+      writeFixture(root, 'index.html', '<html><head><title>Bundle companions</title></head><body>Home</body></html>');
+      await viteBuild({
+        root, configFile: false, logLevel: 'silent', publicDir: false,
+        plugins: [
+          {
+            name: 'user-companions',
+            generateBundle() {
+              this.emitFile({ type: 'asset', fileName: 'llms.txt', source: llms });
+              this.emitFile({ type: 'asset', fileName: 'feed.xml', source: feed });
+            },
+          },
+          createGeoGeneratorPlugin({ audit: false, llmsMdMirror: false }),
+        ],
+        build: { outDir: join(root, 'dist'), emptyOutDir: true },
+      });
+      expect(readFileSync(join(root, 'dist/llms.txt'), 'utf-8')).toBe(llms);
+      expect(readFileSync(join(root, 'dist/feed.xml'), 'utf-8')).toBe(feed);
+      expect(existsSync(join(root, 'dist/sitemap.xml'))).toBe(true);
+      expect(existsSync(join(root, 'dist/robots.txt'))).toBe(true);
     }, 20_000);
   });
 

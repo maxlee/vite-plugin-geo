@@ -196,26 +196,70 @@ describe('v0.1.4 public contract', () => {
     expect(plan.files.map(({ filename }) => filename)).not.toContain('draft.md');
   });
 
-  it('rejects a replace-style mirror collision before writing', async () => {
+  it('preserves a replace-style mirror collision by default', async () => {
+    writeFileSync(join(distDir, 'about.md'), '# Handwritten About\n');
+
+    const plan = await buildGeoGenerationPlanFromDisk({
+      projectRoot: fixtureRoot,
+      distDir,
+      options: { llmsMdMirrorStyle: 'replace', generateFeed: false },
+      currentDate: '2026-08-12T00:00:00.000Z',
+    });
+
+    expect(plan.files.map(({ filename }) => filename)).not.toContain('about.md');
+    expect(plan.report.fileCompatibility).toMatchObject({
+      policy: 'preserve',
+      decisions: [{ filename: 'about.md', decision: 'preserve' }],
+    });
+    expect(plan.report.preservedFiles).toContain('about.md');
+
+    applyGeoGenerationPlanToDisk(plan, { distDir });
+    expect(readFileSync(join(distDir, 'about.md'), 'utf-8')).toBe('# Handwritten About\n');
+    expect(existsSync(join(distDir, 'llms.txt'))).toBe(true);
+  });
+
+  it('rejects a replace-style mirror collision when fileConflict is error', async () => {
     writeFileSync(join(distDir, 'about.md'), '# Handwritten About\n');
 
     await expect(buildGeoGenerationPlanFromDisk({
       projectRoot: fixtureRoot,
       distDir,
-      options: { llmsMdMirrorStyle: 'replace', generateFeed: false },
+      options: { llmsMdMirrorStyle: 'replace', generateFeed: false, fileConflict: 'error' },
       currentDate: '2026-08-12T00:00:00.000Z',
     })).rejects.toThrow(/about\.md.*conflict/i);
 
     expect(existsSync(join(distDir, 'llms.txt'))).toBe(false);
   });
 
-  it('rejects user-owned generated-file targets before writing any output', async () => {
+  it('preserves user-owned generated-file targets by default', async () => {
+    writeFileSync(join(distDir, 'llms.txt'), '# Handwritten index\n');
+
+    const plan = await buildGeoGenerationPlanFromDisk({
+      projectRoot: fixtureRoot,
+      distDir,
+      options: { generateFeed: false },
+      currentDate: '2026-08-12T00:00:00.000Z',
+    });
+
+    expect(plan.files.map(({ filename }) => filename)).not.toContain('llms.txt');
+    expect(plan.report.fileCompatibility).toMatchObject({
+      policy: 'preserve',
+      decisions: [{ filename: 'llms.txt', decision: 'preserve' }],
+    });
+    expect(plan.report.preservedFiles).toContain('llms.txt');
+
+    applyGeoGenerationPlanToDisk(plan, { distDir });
+    expect(readFileSync(join(distDir, 'llms.txt'), 'utf-8')).toBe('# Handwritten index\n');
+    expect(existsSync(join(distDir, 'robots.txt'))).toBe(true);
+  });
+
+  it('rejects user-owned generated-file targets when fileConflict is error', async () => {
     writeFileSync(join(distDir, 'llms.txt'), '# Handwritten index\n');
 
     await expect(buildGeoGenerationPlanFromDisk({
       projectRoot: fixtureRoot,
       distDir,
-      options: { generateFeed: false },
+      options: { generateFeed: false, fileConflict: 'error' },
       currentDate: '2026-08-12T00:00:00.000Z',
     })).rejects.toThrow(/llms\.txt.*conflict/i);
 

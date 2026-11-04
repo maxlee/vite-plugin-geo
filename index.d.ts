@@ -3,6 +3,7 @@ import type { Plugin } from 'vite';
 export type LastmodStrategy = 'none' | 'file-mtime' | 'build' | 'git';
 export type LlmsMdMirrorStyle = 'append' | 'replace';
 export type SitemapConflict = 'preserve' | 'error' | 'overwrite';
+export type FileConflict = 'preserve' | 'error' | 'overwrite';
 export type RouteConflict = 'error' | 'first' | 'last';
 export type AuditFailOn = 'warning' | 'advice';
 export type VerifyFailOn = 'error' | 'warning' | 'none';
@@ -65,6 +66,12 @@ export interface GeoGeneratorOptions {
   sitemapMaxBytes?: number;
   generateSitemap?: boolean;
   sitemapConflict?: SitemapConflict;
+  /**
+   * Policy when a generated companion file (llms.txt, feed.xml, humans.txt,
+   * sku.md, or a Markdown mirror) already exists as a user file.
+   * Defaults to 'preserve'. Sitemaps and robots.txt use their own options.
+   */
+  fileConflict?: FileConflict;
   sitemapUrl?: string;
   routeConflict?: RouteConflict;
   llmsMdMirror?: boolean;

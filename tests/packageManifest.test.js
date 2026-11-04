@@ -31,7 +31,7 @@ describe('vite-plugin-geo publish manifest', () => {
   it('points npm entry fields at package-root runtime files and whitelists only publishable paths', () => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
 
-    expect(manifest.version).toBe('0.2.0');
+    expect(manifest.version).toBe('0.2.1');
     expect(manifest).toMatchObject({
       name: 'vite-plugin-geo',
       main: './index.js',
@@ -162,7 +162,7 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(readme).toContain('## 🔧 CLI 命令');
     expect(readme).toContain('## 📝 行为契约');
     expect(readme).toContain('## 💡 常见配置');
-    expect(readme).toContain('当前版本：`vite-plugin-geo@0.2.0`');
+    expect(readme).toContain('当前版本：`vite-plugin-geo@0.2.1`');
     expect(readme).toContain('审核日期：2026-08-12');
     expect(readme).toContain('llms.txt v2');
     expect(readme).toContain('社区开放提案，不是 IETF/W3C 标准');
@@ -187,13 +187,15 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(developmentGuide).toContain('再次取得明确批准');
   });
 
-  it('publishes only the v0.2.0 public option surface', () => {
+  it('publishes only the v0.2.1 public option surface', () => {
     const declarations = readFileSync(join(packageDir, 'index.d.ts'), 'utf-8');
 
     expect(declarations).toContain("export type LastmodStrategy = 'none' | 'file-mtime' | 'build' | 'git'");
     expect(declarations).toContain("export type LlmsMdMirrorStyle = 'append' | 'replace'");
     expect(declarations).toContain("export type SitemapConflict = 'preserve' | 'error' | 'overwrite'");
+    expect(declarations).toContain("export type FileConflict = 'preserve' | 'error' | 'overwrite'");
     expect(declarations).toContain("export type RouteConflict = 'error' | 'first' | 'last'");
+    expect(declarations).toContain('fileConflict?: FileConflict');
     expect(declarations).toContain('generateRobots?: boolean');
     expect(declarations).toContain('audit?: boolean');
     expect(declarations).toContain('auditFailOn?: AuditFailOn');

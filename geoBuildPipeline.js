@@ -53,16 +53,42 @@ const REMOVED_GEO_OPTIONS = [
   'stabilityRounds',
 ];
 const REMOVED_SKU_OPTIONS = ['catalogUrl', 'contentLanguage', 'market'];
+const MARKER_COMMENT = `<!-- ${GENERATED_FILE_MARKER} -->`;
+
+/**
+ * Recognize files produced by this plugin. Ownership is claimed only by the
+ * exact marker format for each file type, so a user file that merely mentions
+ * the plugin name is still treated as user-owned.
+ */
+function isManagedGeneratedFile(filename, content) {
+  if (content === undefined || content === null) return false;
+  const text = String(content);
+  const normalized = normalizeFilePath(filename);
+  const firstLine = text.split(/\r?\n/, 1)[0].trim();
+
+  if (normalized === 'robots.txt') {
+    return firstLine === `# ${GENERATED_FILE_MARKER}`;
+  }
+  if (normalized === 'humans.txt') {
+    return firstLine === `/* ${GENERATED_FILE_MARKER} */`;
+  }
+  if (text.startsWith(`<!-- ${GENERATED_FILE_MARKER}; source: `)) {
+    return true;
+  }
+  return text.split(/\r?\n/).some((line) => line.trim() === MARKER_COMMENT);
+}
 
 function markGeneratedFile(filename, content) {
-  if (content.includes(GENERATED_FILE_MARKER)) {
+  if (isManagedGeneratedFile(filename, content)) {
     return content;
   }
   if (filename === 'feed.xml') {
-    return content.replace(
+    const marked = content.replace(
       /^<\?xml version="1\.0" encoding="UTF-8"\?>/,
-      `$&\n<!-- ${GENERATED_FILE_MARKER} -->`,
+      `$&\n${MARKER_COMMENT}`,
     );
+    if (marked !== content) return marked;
+    return `${content.trimEnd()}\n${MARKER_COMMENT}\n`;
   }
   if (filename === 'robots.txt') {
     return `# ${GENERATED_FILE_MARKER}\n${content}`;
@@ -70,7 +96,7 @@ function markGeneratedFile(filename, content) {
   if (filename === 'humans.txt') {
     return `/* ${GENERATED_FILE_MARKER} */\n${content}`;
   }
-  return `${content.trimEnd()}\n\n<!-- ${GENERATED_FILE_MARKER} -->\n`;
+  return `${content.trimEnd()}\n\n${MARKER_COMMENT}\n`;
 }
 
 function validateGeneratedFileLimits(filename, content) {
@@ -144,6 +170,15 @@ export function formatGeoDebugSummary({
     lines.push(
       `   sitemap: detected=${sitemap.detected} decision=${sitemap.decision} `
       + `url=${sitemap.sitemapUrl} reason=${sitemap.reason}`,
+    );
+  }
+  const fileCompatibility = report.fileCompatibility;
+  if (fileCompatibility?.decisions?.length) {
+    lines.push(
+      `   file conflicts: policy=${fileCompatibility.policy} `
+      + fileCompatibility.decisions
+        .map(({ filename, decision }) => `${filename} → ${decision}`)
+        .join('、'),
     );
   }
   const files = report.generatedFiles || [];
@@ -269,12 +304,13 @@ function findExistingSitemap(outputAssets = []) {
     .map(({ filename, content, source }) => {
       const inspected = inspectSitemapContent(content);
       if (!inspected) return null;
+      const normalizedFilename = normalizeFilePath(filename);
       return {
-        filename: normalizeFilePath(filename),
+        filename: normalizedFilename,
         locCount: inspected.locCount,
         samples: inspected.samples,
         isIndex: inspected.isIndex,
-        managed: String(content || '').includes(GENERATED_FILE_MARKER),
+        managed: isManagedGeneratedFile(normalizedFilename, content),
         source: source || 'bundle',
       };
     })
@@ -468,6 +504,9 @@ export function validateGeoOptions(options = {}) {
   }
   if (options.sitemapConflict !== undefined && !['preserve', 'error', 'overwrite'].includes(options.sitemapConflict)) {
     errors.push("Option 'sitemapConflict' must be one of: preserve, error, overwrite.");
+  }
+  if (options.fileConflict !== undefined && !['preserve', 'error', 'overwrite'].includes(options.fileConflict)) {
+    errors.push("Option 'fileConflict' must be one of: preserve, error, overwrite.");
   }
   if (options.routeConflict !== undefined && !['error', 'first', 'last'].includes(options.routeConflict)) {
     errors.push("Option 'routeConflict' must be one of: error, first, last.");
@@ -813,6 +852,36 @@ export function logRobotsPreservation(compatibility, logger) {
   }
 }
 
+export function logFileCompatibility(compatibility, logger = console) {
+  const decisions = compatibility?.decisions || [];
+  if (decisions.length === 0) return;
+
+  const summarize = (filenames) => (
+    filenames.length <= 5
+      ? filenames.join(', ')
+      : `${filenames.slice(0, 5).join(', ')} and ${filenames.length - 5} more`
+  );
+  const preserved = decisions
+    .filter(({ decision }) => decision === 'preserve')
+    .map(({ filename }) => filename);
+  const overwritten = decisions
+    .filter(({ decision }) => decision === 'overwrite')
+    .map(({ filename }) => filename);
+
+  if (preserved.length > 0) {
+    logger.warn(
+      `[vite-plugin-geo] Preserved ${preserved.length} existing user file(s); skipped generation: ${summarize(preserved)}. `
+      + "Set fileConflict: 'overwrite' (CLI: --file-conflict overwrite) to replace them, "
+      + "or 'error' (CLI: --file-conflict error) to fail the build.",
+    );
+  }
+  if (overwritten.length > 0) {
+    logger.warn(
+      `[vite-plugin-geo] Overwrote ${overwritten.length} existing user file(s) because fileConflict='overwrite': ${summarize(overwritten)}.`,
+    );
+  }
+}
+
 export async function buildGeoGenerationPlan({
   projectRoot,
   distDir,
@@ -830,6 +899,7 @@ export async function buildGeoGenerationPlan({
   const packageJsonPath = resolvePackageJsonPath(projectRoot, options.packageJsonPath);
   const packageJson = readPackageJson(packageJsonPath);
   const siteUrl = resolveSiteUrl(options, packageJson);
+  const fileConflict = options.fileConflict || 'preserve';
   const normalizedOptions = {
     ...options,
     projectRoot,
@@ -873,6 +943,8 @@ export async function buildGeoGenerationPlan({
         routeConflicts,
         siteUrl,
         routeBasePath,
+        fileCompatibility: { policy: fileConflict, decisions: [] },
+        preservedFiles: [],
         ...(options.audit !== false ? { audit: { checkedPages: 0, diagnostics: [] } } : {}),
       },
     };
@@ -891,7 +963,7 @@ export async function buildGeoGenerationPlan({
   ]));
   const hasExistingRobots = existingAssets.has('robots.txt');
   const userRobots = hasExistingRobots
-    && !/^# Generated by vite-plugin-geo(?:\r?\n|$)/.test(existingAssets.get('robots.txt'));
+    && !isManagedGeneratedFile('robots.txt', existingAssets.get('robots.txt'));
   const preserveRobots = userRobots && options.generateRobots === undefined;
   if (userRobots && options.generateRobots === true) {
     throw new Error('Generated output path robots.txt conflicts with an existing user file. Set generateRobots: false (CLI: --no-generate-robots) to keep it, or remove the existing robots.txt source to let the plugin generate it.');
@@ -938,6 +1010,7 @@ export async function buildGeoGenerationPlan({
   };
   const files = [];
   const plannedFilenames = new Set();
+  const fileDecisions = [];
   const addFile = (filename, content, {
     markManaged = true,
     protectExisting = true,
@@ -954,17 +1027,31 @@ export async function buildGeoGenerationPlan({
       throw new Error(`Generated output path conflict: ${normalizedFilename}.`);
     }
     const existingContent = existingAssets.get(normalizedFilename);
-    const isPriorGeneratedFile = existingContent?.includes(GENERATED_FILE_MARKER);
+    const isPriorGeneratedFile = existingContent !== undefined
+      && isManagedGeneratedFile(normalizedFilename, existingContent);
     if (
       protectExisting
       && existingContent !== undefined
       && existingContent !== generatedContent
       && !isPriorGeneratedFile
     ) {
-      throw new Error(`Generated output path ${normalizedFilename} conflicts with an existing user file.`);
+      if (fileConflict === 'error') {
+        throw new Error(
+          `Generated output path ${normalizedFilename} conflicts with an existing user file. `
+          + "Set fileConflict: 'preserve' (CLI: --file-conflict preserve) to keep the user file and skip generation, "
+          + "or fileConflict: 'overwrite' (CLI: --file-conflict overwrite) to replace it.",
+        );
+      }
+      if (fileConflict === 'preserve') {
+        plannedFilenames.add(normalizedFilename);
+        fileDecisions.push({ filename: normalizedFilename, decision: 'preserve' });
+        return false;
+      }
+      fileDecisions.push({ filename: normalizedFilename, decision: 'overwrite' });
     }
     plannedFilenames.add(normalizedFilename);
     files.push({ filename: normalizedFilename, content: generatedContent });
+    return true;
   };
 
   if (sitemapCompatibility.shouldGenerateSitemap) {
@@ -1084,6 +1171,13 @@ export async function buildGeoGenerationPlan({
       routeBasePath,
       sitemapCompatibility,
       robotsCompatibility,
+      fileCompatibility: {
+        policy: fileConflict,
+        decisions: fileDecisions,
+      },
+      preservedFiles: fileDecisions
+        .filter(({ decision }) => decision === 'preserve')
+        .map(({ filename }) => filename),
       ...(options.audit !== false ? { audit: auditGeoPlan({
         allPages: allPageModels,
         pages: pageModels,

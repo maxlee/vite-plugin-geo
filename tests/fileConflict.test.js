@@ -1,0 +1,218 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  applyGeoGenerationPlanToDisk,
+  buildGeoGenerationPlanFromDisk,
+  logFileCompatibility,
+  validateGeoOptions,
+} from '../geoBuildPipeline.js';
+import { parseCliArgs, runSeoCliGenerate } from '../cli.js';
+
+const roots = [];
+
+function page(title) {
+  return `<html lang="en"><head><title>${title}</title><meta name="description" content="${title} desc"></head><body><h1>${title}</h1></body></html>`;
+}
+
+function fixture(files = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'geo-file-conflict-'));
+  roots.push(root);
+  const distDir = join(root, 'dist');
+  mkdirSync(distDir, { recursive: true });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({
+    name: 'file-conflict-fixture',
+    domain: 'https://example.test',
+    author: {},
+  }));
+  writeFileSync(join(distDir, 'index.html'), page('Home'));
+  writeFileSync(join(distDir, 'about.html'), page('About'));
+  Object.entries(files).forEach(([name, content]) => writeFileSync(join(distDir, name), content));
+  return { root, distDir };
+}
+
+function planFor(context, options = {}) {
+  return buildGeoGenerationPlanFromDisk({
+    projectRoot: context.root,
+    distDir: context.distDir,
+    currentDate: '2026-10-01T00:00:00.000Z',
+    options,
+  });
+}
+
+function snapshot(directory) {
+  return readdirSync(directory).sort().map((name) => [name, readFileSync(join(directory, name))]);
+}
+
+afterEach(() => {
+  roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
+});
+
+describe('file conflict policy', () => {
+  it('preserves user-owned companion files by default and generates the rest', async () => {
+    const context = fixture({
+      'llms.txt': '# Handwritten llms\n',
+      'feed.xml': '<rss>User feed</rss>',
+      'humans.txt': 'Human owned\n',
+      'sku.md': '# User SKU\n',
+      'about.md': '# Handwritten About\n',
+    });
+
+    const plan = await planFor(context, {
+      generateHumans: true,
+      skuMd: {
+        merchantName: 'Example',
+        summary: 'Example store',
+        catalog: [{ label: 'Home', url: 'https://example.test/' }],
+      },
+    });
+
+    const planned = plan.files.map(({ filename }) => filename);
+    for (const filename of ['llms.txt', 'feed.xml', 'humans.txt', 'sku.md', 'about.md']) {
+      expect(planned).not.toContain(filename);
+    }
+    expect(planned).toContain('sitemap.xml');
+    expect(planned).toContain('robots.txt');
+    expect(planned).toContain('index.md');
+    expect(plan.report.fileCompatibility.policy).toBe('preserve');
+    expect(plan.report.preservedFiles.sort()).toEqual(
+      ['about.md', 'feed.xml', 'humans.txt', 'llms.txt', 'sku.md'].sort(),
+    );
+    expect(plan.report.fileCompatibility.decisions.every(({ decision }) => decision === 'preserve')).toBe(true);
+
+    applyGeoGenerationPlanToDisk(plan, { distDir: context.distDir });
+
+    expect(readFileSync(join(context.distDir, 'llms.txt'), 'utf-8')).toBe('# Handwritten llms\n');
+    expect(readFileSync(join(context.distDir, 'feed.xml'), 'utf-8')).toBe('<rss>User feed</rss>');
+    expect(readFileSync(join(context.distDir, 'humans.txt'), 'utf-8')).toBe('Human owned\n');
+    expect(readFileSync(join(context.distDir, 'sku.md'), 'utf-8')).toBe('# User SKU\n');
+    expect(readFileSync(join(context.distDir, 'about.md'), 'utf-8')).toBe('# Handwritten About\n');
+    expect(existsSync(join(context.distDir, 'index.md'))).toBe(true);
+    expect(existsSync(join(context.distDir, 'sitemap.xml'))).toBe(true);
+
+    const homeUpdate = plan.htmlUpdates.find(({ filename }) => filename === 'index.html');
+    expect(homeUpdate.content).toContain('application/rss+xml');
+    expect(homeUpdate.content).toContain('rel="describedby"');
+    const aboutUpdate = plan.htmlUpdates.find(({ filename }) => filename === 'about.html');
+    expect(aboutUpdate.content).toContain('rel="alternate" type="text/markdown" href="https://example.test/about.md"');
+  });
+
+  it('fails before writing when fileConflict is error', async () => {
+    const context = fixture({ 'llms.txt': '# Handwritten llms\n' });
+    const before = snapshot(context.distDir);
+
+    await expect(planFor(context, { fileConflict: 'error' }))
+      .rejects.toThrow(/llms\.txt.*existing user file/i);
+
+    expect(snapshot(context.distDir)).toEqual(before);
+  });
+
+  it('overwrites with fileConflict overwrite and recognizes the marker on later runs', async () => {
+    const context = fixture({ 'llms.txt': '# Handwritten llms\n' });
+
+    const overwritePlan = await planFor(context, { fileConflict: 'overwrite' });
+    expect(overwritePlan.report.fileCompatibility.decisions).toEqual([
+      { filename: 'llms.txt', decision: 'overwrite' },
+    ]);
+    expect(overwritePlan.files.find(({ filename }) => filename === 'llms.txt').content)
+      .toContain('<!-- Generated by vite-plugin-geo -->');
+    applyGeoGenerationPlanToDisk(overwritePlan, { distDir: context.distDir });
+    expect(readFileSync(join(context.distDir, 'llms.txt'), 'utf-8'))
+      .toContain('<!-- Generated by vite-plugin-geo -->');
+
+    const secondPlan = await planFor(context);
+    expect(secondPlan.report.fileCompatibility.decisions).toEqual([]);
+    expect(secondPlan.files.map(({ filename }) => filename)).toContain('llms.txt');
+  });
+
+  it('treats only the exact marker format as plugin ownership', async () => {
+    const prose = fixture({
+      'llms.txt': '# Notes\n\nGenerated by vite-plugin-geo is the tool that wrote this page.\n',
+    });
+    const prosePlan = await planFor(prose);
+    expect(prosePlan.report.preservedFiles).toContain('llms.txt');
+
+    const managed = fixture({
+      'feed.xml': '<?xml version="1.0" encoding="UTF-8"?>\n<!-- Generated by vite-plugin-geo -->\n<rss>old</rss>',
+    });
+    const managedPlan = await planFor(managed);
+    expect(managedPlan.report.preservedFiles).not.toContain('feed.xml');
+    expect(managedPlan.files.map(({ filename }) => filename)).toContain('feed.xml');
+  });
+
+  it('does not let fileConflict override sitemap or robots policy', async () => {
+    const context = fixture({
+      'sitemap.xml': '<?xml version="1.0" encoding="UTF-8"?><urlset><url><loc>https://example.test/old</loc></url></urlset>',
+      'robots.txt': 'User-agent: *\nDisallow: /private/\n',
+    });
+
+    const plan = await planFor(context, { fileConflict: 'overwrite' });
+    expect(plan.report.sitemapCompatibility.decision).toBe('preserve');
+    expect(plan.report.robotsCompatibility.preserved).toBe(true);
+    expect(plan.files.map(({ filename }) => filename)).not.toContain('sitemap.xml');
+    expect(plan.files.map(({ filename }) => filename)).not.toContain('robots.txt');
+
+    await expect(planFor(context, { fileConflict: 'preserve', generateRobots: true }))
+      .rejects.toThrow(/robots\.txt.*generateRobots/i);
+  });
+
+  it('validates fileConflict values', () => {
+    expect(validateGeoOptions({ fileConflict: 'preserve' })).toMatchObject({ fileConflict: 'preserve' });
+    expect(() => validateGeoOptions({ fileConflict: 'skip' }))
+      .toThrow(/fileConflict.*preserve, error, overwrite/i);
+  });
+
+  it('preserves user files through the CLI generate path', async () => {
+    const context = fixture({
+      'llms.txt': '# User llms\n',
+      'feed.xml': '<rss>User feed</rss>',
+    });
+    const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const result = await runSeoCliGenerate({ llmsMdMirror: false }, { cwd: context.root, logger });
+
+    expect(result.preservedFiles.sort()).toEqual(['feed.xml', 'llms.txt']);
+    expect(readFileSync(join(context.distDir, 'llms.txt'), 'utf-8')).toBe('# User llms\n');
+    expect(readFileSync(join(context.distDir, 'feed.xml'), 'utf-8')).toBe('<rss>User feed</rss>');
+    expect(logger.warn.mock.calls.flat().join('\n'))
+      .toMatch(/Preserved 2 existing user file.*llms\.txt.*feed\.xml/i);
+    expect(result.generatedFiles).toContain('sitemap.xml');
+  });
+
+  it('parses the CLI flag', () => {
+    expect(parseCliArgs(['generate', '--file-conflict', 'error'])).toMatchObject({
+      command: 'generate',
+      options: { fileConflict: 'error' },
+    });
+    expect(parseCliArgs(['--file-conflict=overwrite'])).toMatchObject({
+      options: { fileConflict: 'overwrite' },
+    });
+  });
+
+  it('logs preservation and overwrite decisions', () => {
+    const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    logFileCompatibility({
+      policy: 'preserve',
+      decisions: [
+        { filename: 'llms.txt', decision: 'preserve' },
+        { filename: 'feed.xml', decision: 'overwrite' },
+      ],
+    }, logger);
+
+    expect(logger.warn.mock.calls.flat().join('\n')).toMatch(/Preserved 1 existing user file.*llms\.txt/i);
+    expect(logger.warn.mock.calls.flat().join('\n')).toMatch(/Overwrote 1 existing user file.*feed\.xml/i);
+
+    logger.warn.mockClear();
+    logFileCompatibility({ policy: 'preserve', decisions: [] }, logger);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+});

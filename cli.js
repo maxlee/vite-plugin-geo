@@ -8,6 +8,7 @@ import {
   applyGeoGenerationPlanToDisk,
   buildGeoGenerationPlanFromDisk,
   formatGeoDebugSummary,
+  logFileCompatibility,
   logRobotsPreservation,
   logSitemapCompatibility,
   summarizeExcludedReasons,
@@ -35,6 +36,7 @@ Options:
   --robots-directives <list>   Comma-separated robots directives
   --sitemap-url <path-or-url>  Public sitemap URL/path used by robots.txt and llms.txt
   --sitemap-conflict <mode>    preserve | error | overwrite (default: preserve when unset)
+  --file-conflict <mode>       preserve | error | overwrite (default: preserve)
   --route-conflict <mode>      error | first | last (default: error)
   --pretty-urls / --no-pretty-urls
   --sitemap-index / --no-sitemap-index
@@ -116,6 +118,7 @@ const CLI_ARG_DEFS = [
   { flag: '--llms-md-mirror-style', key: 'llmsMdMirrorStyle' },
   { flag: '--sitemap-url', key: 'sitemapUrl' },
   { flag: '--sitemap-conflict', key: 'sitemapConflict' },
+  { flag: '--file-conflict', key: 'fileConflict' },
   { flag: '--route-conflict', key: 'routeConflict' },
   { flag: '--fail-on-audit', key: 'failOnAudit' },
   { flag: '--fail-on-verify', key: 'failOnVerify' },
@@ -270,6 +273,10 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
     distDir,
     options,
   });
+  const preservedFiles = plan.report.preservedFiles
+    || (plan.report.fileCompatibility?.decisions || [])
+      .filter(({ decision }) => decision === 'preserve')
+      .map(({ filename }) => filename);
 
   logGeoAudit(plan.report.audit, logger);
 
@@ -288,14 +295,14 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
       + `distDir=${distDir} sourceHtmlDir=${options.sourceHtmlDir || 'src/pages'} `
       + 'include=**/*.html',
     );
-    return { distDir, generatedFiles: [], plan };
+    return { distDir, generatedFiles: [], preservedFiles, plan };
   }
   if (plan.report.includedHtmlFiles === 0) {
     logger.warn(
       `⚠️  All ${plan.report.totalHtmlFiles} HTML file(s) were excluded by filters. `
       + `Reasons: ${summarizeExcludedReasons(plan.report.excludedDetails) || 'unknown'}`,
     );
-    return { distDir, generatedFiles: [], plan };
+    return { distDir, generatedFiles: [], preservedFiles, plan };
   }
   (plan.report.routeConflicts || []).forEach(({ route, files, chosen }) => {
     logger.warn(`⚠️  Route conflict for ${route}: ${files.join('、')}; kept ${chosen}.`);
@@ -311,15 +318,20 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
   applyGeoGenerationPlanToDisk(plan, { distDir });
   logSitemapCompatibility(plan.report.sitemapCompatibility, logger);
   logRobotsPreservation(plan.report.robotsCompatibility, logger);
+  logFileCompatibility(plan.report.fileCompatibility, logger);
   const generatedFiles = plan.files.map(({ filename }) => filename);
   generatedFiles.forEach((filename) => logger.log(`✅ Generated ${filename}`));
   if (plan.htmlUpdates.length > 0) {
     logger.log(`✅ Injected discovery metadata into ${plan.htmlUpdates.length} HTML file(s)`);
   }
-  logger.log(`\n🎉 GEO generation complete. ${generatedFiles.length} file(s) updated.`);
+  const preservedSummary = preservedFiles.length > 0
+    ? `, ${preservedFiles.length} user file(s) preserved`
+    : '';
+  logger.log(`\n🎉 GEO generation complete. ${generatedFiles.length} file(s) updated${preservedSummary}.`);
   return {
     distDir,
     generatedFiles,
+    preservedFiles,
     includedHtmlFiles: plan.report.includedHtmlFiles,
     excludedHtmlFiles: plan.report.excludedHtmlFiles,
     plan,

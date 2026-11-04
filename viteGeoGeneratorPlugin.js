@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from 'path';
 import {
   buildGeoGenerationPlan,
   formatGeoDebugSummary,
+  logFileCompatibility,
   logRobotsPreservation,
   logSitemapCompatibility,
   summarizeExcludedReasons,
@@ -43,6 +44,7 @@ const MANAGED_PUBLIC_FILENAMES = new Set([
   'llms.txt',
   'feed.xml',
   'humans.txt',
+  'sku.md',
   'sitemap.xml',
   'sitemap_index.xml',
 ]);
@@ -69,7 +71,8 @@ function collectPublicDirAssets(publicDir, assets) {
       const fileName = entry.name.toLowerCase();
       const isManagedName = !prefix && MANAGED_PUBLIC_FILENAMES.has(fileName);
       const isXml = fileName.endsWith('.xml');
-      if (!isManagedName && !isXml) continue;
+      const isMarkdown = fileName.endsWith('.md');
+      if (!isManagedName && !isXml && !isMarkdown) continue;
       if (existing.has(relativeName)) continue;
 
       let content;
@@ -78,8 +81,9 @@ function collectPublicDirAssets(publicDir, assets) {
       } catch {
         continue;
       }
-      // Only sitemap-shaped XML participates in conflict detection.
-      if (isXml && !/<(?:sitemapindex|urlset)\b/i.test(content)) continue;
+      // Non-managed XML only participates when it looks like a sitemap.
+      // Managed names such as feed.xml must not be filtered by shape.
+      if (isXml && !isManagedName && !/<(?:sitemapindex|urlset)\b/i.test(content)) continue;
 
       existing.add(relativeName);
       assets.push({ filename: relativeName, content, source: 'publicDir' });
@@ -223,6 +227,7 @@ export function createGeoGeneratorPlugin(options = {}) {
 
         logSitemapCompatibility(plan.report.sitemapCompatibility, console);
         logRobotsPreservation(plan.report.robotsCompatibility, console);
+        logFileCompatibility(plan.report.fileCompatibility, console);
         logGeoAudit(plan.report.audit, console);
         // Gate before mutating the bundle so a failing CI build ships nothing.
         assertAuditGate(plan.report.audit, options.auditFailOn);
@@ -306,6 +311,7 @@ function logPluginVersion(options = {}) {
   console.log(`   Enabled options: ${enabledOptions.join(', ') || 'none'}`);
   const behavior = {
     sitemapConflict: options.sitemapConflict || 'auto',
+    fileConflict: options.fileConflict || 'preserve',
     routeConflict: options.routeConflict || 'error',
     auditFailOn: options.auditFailOn || 'none',
   };

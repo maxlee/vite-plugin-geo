@@ -101,12 +101,28 @@ describe('existing robots compatibility', () => {
     expect(snapshot(context.distDir)).toEqual(before);
   });
 
-  it('still rejects a conflicting user feed without changing any output', async () => {
+  it('preserves a conflicting user feed by default and warns', async () => {
+    const context = fixture(userRobots);
+    writeFileSync(join(context.distDir, 'feed.xml'), '<rss>User owned feed</rss>');
+    const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const result = await runSeoCliGenerate({}, { cwd: context.root, logger });
+
+    expect(readFileSync(join(context.distDir, 'feed.xml'), 'utf-8')).toBe('<rss>User owned feed</rss>');
+    expect(result.preservedFiles).toContain('feed.xml');
+    expect(logger.warn.mock.calls.flat().join('\n')).toMatch(/preserv.*feed\.xml/i);
+    expect(existsSync(join(context.distDir, 'llms.txt'))).toBe(true);
+    expect(existsSync(join(context.distDir, 'sitemap.xml'))).toBe(true);
+  });
+
+  it('rejects a conflicting user feed when fileConflict is error without changing any output', async () => {
     const context = fixture(userRobots);
     writeFileSync(join(context.distDir, 'feed.xml'), '<rss>User owned feed</rss>');
     const before = snapshot(context.distDir);
-    await expect(runSeoCliGenerate({}, { cwd: context.root, logger: { log() {}, warn() {}, error() {} } }))
-      .rejects.toThrow(/feed\.xml.*existing user file/i);
+    await expect(runSeoCliGenerate(
+      { fileConflict: 'error' },
+      { cwd: context.root, logger: { log() {}, warn() {}, error() {} } },
+    )).rejects.toThrow(/feed\.xml.*existing user file/i);
     expect(snapshot(context.distDir)).toEqual(before);
   });
 
