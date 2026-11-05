@@ -11,7 +11,12 @@ import { collectAuditFacts } from './geoAudit.js';
 
 const DEFAULT_STRIP_PATH_PREFIXES = ['src/pages/'];
 const DEFAULT_EXCLUDE_PATTERNS = ['404.html', '500.html'];
-const MARKDOWN_STRIP_TAGS = new Set(['script', 'style', 'noscript', 'template']);
+const MARKDOWN_STRIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'svg']);
+const MARKDOWN_BODY_CHROME_TAGS = new Set(['nav', 'aside', 'footer']);
+const MARKDOWN_BODY_CHROME_ROLES = new Set(['navigation', 'complementary', 'contentinfo']);
+const HEADING_TAG_NAMES = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const ABSOLUTE_URL_SCHEME_PATTERN = /^[a-z][a-z\d+.-]*:/i;
+const LEADING_H1_PATTERN = /^#(?!#)\s+(.+?)(?:\s+#+)?\s*$/;
 const SITEMAP_MAX_URLS = 50000;
 const SITEMAP_MAX_BYTES = 52_428_800;
 
@@ -23,7 +28,7 @@ const turndownService = new TurndownService({
   strongDelimiter: '**',
 });
 
-turndownService.remove(['script', 'style', 'noscript', 'template']);
+turndownService.remove(['script', 'style', 'noscript', 'template', 'svg']);
 
 /**
  * Find the first element node by tag name in parse5 AST.
@@ -52,6 +57,104 @@ function findFirstNodeByTagName(node, tagName) {
   }
 
   return null;
+}
+
+function findFirstNodeByRole(node, role) {
+  if (!node || typeof node !== 'object') {
+    return null;
+  }
+
+  const roles = getAttribute(node, 'role').toLowerCase().split(/\s+/).filter(Boolean);
+  if (roles.includes(role)) {
+    return node;
+  }
+
+  if (!Array.isArray(node.childNodes)) {
+    return null;
+  }
+
+  for (const childNode of node.childNodes) {
+    const matchedNode = findFirstNodeByRole(childNode, role);
+    if (matchedNode) {
+      return matchedNode;
+    }
+  }
+
+  return null;
+}
+
+function containsHeadingNode(node) {
+  if (!node || typeof node !== 'object') {
+    return false;
+  }
+
+  if (HEADING_TAG_NAMES.has(node.tagName)) {
+    return true;
+  }
+
+  return Array.isArray(node.childNodes) && node.childNodes.some((childNode) => (
+    containsHeadingNode(childNode)
+  ));
+}
+
+/**
+ * Choose the element that represents the page's readable content.
+ * `<main>` is authoritative, a single `<article>` is the next best signal,
+ * and `<body>` is the fallback for pages without semantic containers.
+ */
+function selectMarkdownContentRoot(documentAst) {
+  const mainNode = findFirstNodeByTagName(documentAst, 'main')
+    || findFirstNodeByRole(documentAst, 'main');
+  if (mainNode) {
+    return { node: mainNode, bodyFallback: false };
+  }
+
+  const articleNodes = findNodesByTagName(documentAst, 'article');
+  if (articleNodes.length === 1) {
+    return { node: articleNodes[0], bodyFallback: false };
+  }
+
+  const bodyNode = findFirstNodeByTagName(documentAst, 'body');
+  return { node: bodyNode || documentAst, bodyFallback: Boolean(bodyNode) };
+}
+
+function shouldKeepBodyChild(childNode) {
+  if (!childNode || typeof childNode !== 'object') {
+    return true;
+  }
+
+  if (MARKDOWN_BODY_CHROME_TAGS.has(childNode.tagName)) {
+    return false;
+  }
+
+  const roles = getAttribute(childNode, 'role').toLowerCase().split(/\s+/).filter(Boolean);
+  if (roles.some((role) => MARKDOWN_BODY_CHROME_ROLES.has(role))) {
+    return false;
+  }
+
+  if (childNode.tagName === 'header' || roles.includes('banner')) {
+    return containsHeadingNode(childNode);
+  }
+
+  return true;
+}
+
+/**
+ * Remove site chrome from a `<body>` fallback while keeping article-internal
+ * headers and footers intact.
+ */
+function stripBodyChromeNodes(node) {
+  if (!node || !Array.isArray(node.childNodes)) {
+    return;
+  }
+
+  node.childNodes = node.childNodes.filter((childNode) => shouldKeepBodyChild(childNode));
+  node.childNodes.forEach((childNode) => {
+    if (childNode?.tagName === 'main' || childNode?.tagName === 'article') {
+      return;
+    }
+    stripBodyChromeNodes(childNode);
+  });
 }
 
 function getNodeText(node) {
@@ -564,28 +667,8 @@ export function resolvePagePath(relativePath, options = {}) {
   return path;
 }
 
-/**
- * Convert HTML content to Markdown format.
- * This function extracts text content from HTML and converts it to clean Markdown,
- * making it easier for LLMs to process and understand the content.
- * 
- * @param {string} htmlContent - Raw HTML content
- * @returns {string} Markdown formatted content
- */
-function convertHtmlAstToMarkdown(documentAst) {
-  const bodyNode = findFirstNodeByTagName(documentAst, 'body');
-  const contentRootNode = bodyNode || documentAst;
-
-  stripBlockedNodes(contentRootNode, MARKDOWN_STRIP_TAGS);
-  const cleanedHtml = (serialize(contentRootNode) || '').trim();
-
-  if (!cleanedHtml) {
-    return '';
-  }
-
-  const markdownContent = turndownService.turndown(cleanedHtml);
-
-  return markdownContent
+function normalizeMarkdownOutput(markdownContent) {
+  return String(markdownContent || '')
     .replace(/\r\n/g, '\n')
     .replace(/\u00a0/g, ' ')
     .replace(/[ \t]+\n/g, '\n')
@@ -594,14 +677,100 @@ function convertHtmlAstToMarkdown(documentAst) {
     .trim();
 }
 
-export function convertHtmlToMarkdown(htmlContent) {
+function resolveEffectiveBaseUrl(documentAst, baseUrl) {
+  if (!baseUrl) {
+    return '';
+  }
+
+  const baseNode = findFirstNodeByTagName(documentAst, 'base');
+  const href = getAttribute(baseNode, 'href').trim();
+  if (!href) {
+    return baseUrl;
+  }
+
+  return resolveHttpUrl(href, baseUrl) || baseUrl;
+}
+
+function resolveResourceUrl(value, baseUrl) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.startsWith('#') || ABSOLUTE_URL_SCHEME_PATTERN.test(raw)) {
+    return value;
+  }
+
+  return resolveHttpUrl(raw, baseUrl) || value;
+}
+
+function rewriteImageSources(node, baseUrl) {
+  if (!node || typeof node !== 'object') {
+    return;
+  }
+
+  if (node.tagName === 'img') {
+    const src = getAttribute(node, 'src');
+    const resolved = src ? resolveResourceUrl(src, baseUrl) : src;
+    if (resolved && resolved !== src) {
+      const srcAttribute = node.attrs?.find((attribute) => attribute.name.toLowerCase() === 'src');
+      if (srcAttribute) {
+        srcAttribute.value = resolved;
+      }
+    }
+  }
+
+  if (Array.isArray(node.childNodes)) {
+    node.childNodes.forEach((childNode) => rewriteImageSources(childNode, baseUrl));
+  }
+}
+
+/**
+ * Convert HTML content to Markdown format.
+ * The page's semantic content container is preferred; body fallback removes
+ * site chrome so mirrors keep mainly the title, description, and article body.
+ *
+ * @param {object} documentAst - parse5 document AST
+ * @param {object} [options]
+ * @param {string} [options.baseUrl] - Public URL of the built HTML file
+ * @returns {string} Markdown formatted content
+ */
+function convertHtmlAstToMarkdown(documentAst, { baseUrl = '' } = {}) {
+  const effectiveBaseUrl = resolveEffectiveBaseUrl(documentAst, baseUrl);
+
+  const convertRootNode = (rootNode, bodyFallback) => {
+    stripBlockedNodes(rootNode, MARKDOWN_STRIP_TAGS);
+    if (bodyFallback) {
+      stripBodyChromeNodes(rootNode);
+    }
+    if (effectiveBaseUrl) {
+      rewriteImageSources(rootNode, effectiveBaseUrl);
+    }
+
+    const cleanedHtml = (serialize(rootNode) || '').trim();
+    if (!cleanedHtml) {
+      return '';
+    }
+
+    return normalizeMarkdownOutput(turndownService.turndown(cleanedHtml));
+  };
+
+  const selection = selectMarkdownContentRoot(documentAst);
+  const markdown = convertRootNode(selection.node, selection.bodyFallback);
+  if (markdown || selection.bodyFallback) {
+    return markdown;
+  }
+
+  // An empty semantic container (for example an app shell) should not suppress
+  // readable body content. Retry with the body and its chrome cleanup.
+  const bodyNode = findFirstNodeByTagName(documentAst, 'body');
+  return bodyNode ? convertRootNode(bodyNode, true) : '';
+}
+
+export function convertHtmlToMarkdown(htmlContent, options = {}) {
   if (typeof htmlContent !== 'string' || htmlContent.trim() === '') {
     return '';
   }
 
   try {
     const documentAst = parse(htmlContent);
-    return convertHtmlAstToMarkdown(documentAst);
+    return convertHtmlAstToMarkdown(documentAst, options);
   } catch (error) {
     console.warn(`⚠️  [Non-fatal] Failed HTML->Markdown conversion: ${error.message}, fallback to text-only mode`);
 
@@ -614,7 +783,62 @@ export function convertHtmlToMarkdown(htmlContent) {
   }
 }
 
-export function analyzeHtmlPage(htmlContent, { audit = false } = {}) {
+function normalizeInlineText(value) {
+  return String(value || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Compose a mirror with a title heading, description blockquote, and the
+ * content extracted from the built page. A leading H1 identical to the title
+ * is removed so the mirror does not repeat the same heading.
+ *
+ * @param {object} page - Page model with title, description, and markdown
+ * @returns {string} Mirror body (without the ownership marker)
+ */
+export function composeMarkdownMirrorContent({ title, description, markdown } = {}) {
+  const normalizedTitle = normalizeInlineText(title);
+  const normalizedDescription = normalizeInlineText(description);
+  let body = String(markdown || '').replace(/\r\n/g, '\n').trim();
+
+  if (normalizedTitle && body) {
+    const lines = body.split('\n');
+    const firstContentIndex = lines.findIndex((line) => line.trim() !== '');
+    if (firstContentIndex !== -1) {
+      const headingMatch = lines[firstContentIndex].trim().match(LEADING_H1_PATTERN);
+      if (
+        headingMatch
+        && normalizeInlineText(headingMatch[1]).toLowerCase() === normalizedTitle.toLowerCase()
+      ) {
+        lines.splice(firstContentIndex, 1);
+        while (firstContentIndex < lines.length && lines[firstContentIndex].trim() === '') {
+          lines.splice(firstContentIndex, 1);
+        }
+        body = lines.join('\n').trim();
+      }
+    }
+  }
+
+  const parts = [];
+  if (normalizedTitle) {
+    parts.push(`# ${normalizedTitle}`);
+  }
+  if (
+    normalizedDescription
+    && normalizedDescription.toLowerCase() !== normalizedTitle.toLowerCase()
+  ) {
+    parts.push(`> ${normalizedDescription}`);
+  }
+  if (body) {
+    parts.push(body);
+  }
+
+  return parts.join('\n\n');
+}
+
+export function analyzeHtmlPage(htmlContent, { audit = false, baseUrl = '' } = {}) {
   const source = String(htmlContent || '');
   const documentAst = parse(source);
   const titleNode = findFirstNodeByTagName(documentAst, 'title');
@@ -647,7 +871,7 @@ export function analyzeHtmlPage(htmlContent, { audit = false } = {}) {
     noindex,
     hreflang,
     ...(audit ? { audit: collectAuditFacts(documentAst) } : {}),
-    markdown: convertHtmlAstToMarkdown(documentAst),
+    markdown: convertHtmlAstToMarkdown(documentAst, { baseUrl }),
   };
 }
 
@@ -720,6 +944,27 @@ export function resolveMarkdownMirrorPath(pagePath, style = 'append') {
   }
 
   return `${normalizedPath}.md`;
+}
+
+/**
+ * Resolve the public URL of the built HTML file, used as the base for
+ * absolutizing relative image sources in Markdown mirrors.
+ * @param {string} relativePath - HTML path relative to dist root
+ * @param {string} siteUrl - Site origin
+ * @param {object} [options] - Resolved geo options
+ * @returns {string} Absolute HTML file URL
+ */
+export function resolveMarkdownResourceBaseUrl(relativePath, siteUrl, options = {}) {
+  const filePagePath = resolvePagePath(relativePath, { ...options, prettyUrls: false });
+  const fileUrl = composePageUrl(siteUrl, filePagePath, options.routeBasePath);
+
+  // Home pages are directories, so relative resources must resolve against a
+  // trailing-slash base rather than treating the last segment as a file.
+  if (!filePagePath) {
+    return fileUrl.endsWith('/') ? fileUrl : `${fileUrl}/`;
+  }
+
+  return fileUrl;
 }
 
 /**

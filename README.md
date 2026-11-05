@@ -2,7 +2,7 @@
 
 一个面向 Vite 与 Astro 静态站点的构建后插件，自动生成 Sitemap、robots.txt、RSS、llms.txt 和页面 Markdown 镜像。
 
-当前版本：`vite-plugin-geo@0.2.1`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Astro 7 是可选 Astro peer，纯 Vite 项目无需安装 Astro。
+当前版本：`vite-plugin-geo@0.2.2`。支持 Vite 7 / 8，Node.js 要求 `^20.19.0 || >=22.12.0`。Astro 7 是可选 Astro peer，纯 Vite 项目无需安装 Astro。
 
 > 这些文件用于机器发现和抓取提示，不证明任何搜索引擎、AI 产品或模型会读取、采用、索引或优先展示内容，也不承诺排名、收录或转化效果。
 
@@ -12,7 +12,7 @@
 - 🤖 **robots.txt** — 根路径生成、通用自定义指令、控制字符与 500 KiB 限制校验
 - 📰 **RSS 2.0** — 自动注入 discovery link，包含 Atom self link 和稳定 GUID
 - 🧠 **llms.txt v2** — 页面 Markdown 发现关系、单路径作用域，以及 append / replace 两种镜像命名
-- 📄 **Markdown 镜像** — 保留已有有效 alternate，只为缺失页面生成镜像
+- 📄 **Markdown 镜像** — 只保留标题、description 与正文；优先 `<main>`，保留已有有效 alternate，只为缺失页面生成镜像
 - 🌐 **多语言支持** — Sitemap hreflang 映射
 - 👥 **humans.txt** — 可选生成，只输出可确认信息
 - 🛍️ **SKU.md** — 可选生成 `1.0.0-beta` 纯 Markdown 根清单
@@ -109,7 +109,7 @@ dist/
 | `robots.txt` | 自动 | 默认保留已有手写文件；无文件时根作用域生成，非根作用域关闭；始终位于站点根目录 |
 | `feed.xml` | ✅ | RSS 2.0 订阅源，并向 HTML 注入 discovery link |
 | `llms.txt` | ✅ | 当前单一作用域的 llms.txt v2 内容索引 |
-| `*.md` | ✅ | 基于公开 pagePath 的 Markdown 镜像，默认 append，可改为 replace 风格 |
+| `*.md` | ✅ | 基于公开 pagePath 的 Markdown 镜像；优先提取 `<main>` / 唯一 `<article>` 正文，`<body>` 回退时去除站点框架，并前置标题与 description |
 | `humans.txt` | ❌ | 可确认的团队、版权和技术信息 |
 | `sku.md` | ❌ | SKU.md `1.0.0-beta` 根目录发现清单 |
 | `sitemap_index.xml` | 🔀 | Sitemap 超限时按配置自动生成 |
@@ -388,6 +388,8 @@ llms.txt v2 是 2026-08-10 更新的社区提案，不是正式 Web 标准。v0.
 - 缺少 Markdown alternate 时生成镜像，并注入 `rel="alternate" type="text/markdown"`；
 - 已有有效 Markdown alternate 时保留原标签，在 llms.txt 中采用第一个有效地址，不重复生成镜像；
 - 镜像路径由公开 pagePath 派生：pretty URLs 下 `about` → `about.md`；`prettyUrls: false` 时 append 为 `about.html.md`、replace 为 `about.md`；不会出现 `src/pages/` 等中间路径；
+- 镜像内容优先取 `<main>`，其次整页唯一的 `<article>`，最后回退 `<body>`；body 回退时移除 `nav`、`aside`、`footer` 与不含标题的 `header`，并移除内联 `svg`；
+- 镜像以 `# <title>` 和 `> <description>` 开头（空值省略），正文首个与标题相同的 H1 会去重；相对图片地址按 HTML 文件的公开 URL 绝对化，链接 `href` 保持原样；
 - `routeBasePath: '/docs/'` 生成 `/docs/llms.txt`，但不会自动创建更深层作用域；
 - `noindex`、404 / 500 和匹配 `excludePatterns` 的页面不注入、不收录；
 - 重复执行不追加重复标签；目标路径已有手写文件时默认保留并告警，`fileConflict: 'error'` 可恢复构建失败。
@@ -411,6 +413,7 @@ llms.txt v2 是 2026-08-10 更新的社区提案，不是正式 Web 标准。v0.
 复核依据：[Google AI 优化指南](https://developers.google.com/search/docs/fundamentals/ai-optimization-guide)、[Sitemap 构建](https://developers.google.com/search/docs/crawling-indexing/sitemaps/build-sitemap)、[大型 Sitemap](https://developers.google.com/search/docs/crawling-indexing/sitemaps/large-sitemaps)、[多语言版本](https://developers.google.com/search/docs/specialty/international/localized-versions)、[合并重复网址](https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls)、[URL 结构](https://developers.google.com/search/docs/crawling-indexing/url-structure) 和 [robots.txt 规范](https://developers.google.com/crawling/docs/robots-txt/robots-txt-spec)。
 
 - Markdown 镜像使用 `*.md` 还是 `*.html.md` 不是 Google 的排名或索引条件。0.2.0 改用公开路径是为了避免 `/src/pages/` 中间路径，属于 URL 卫生，不是 Google 要求；
+- 0.2.2 让镜像只保留标题、description 与正文，属于面向 AI 代理的内容卫生；它同样不是 Google 的排名、索引或抓取要求；
 - Google Search 不使用 llms.txt、Markdown alternate 或 `describedby`，这些输出服务于其他 AI 代理。Google 仍可能把 `.md` 当作普通文本文件抓取或索引；需要阻止索引时，可在部署层返回 `X-Robots-Tag: noindex`，或关闭 `llmsMdMirror`；
 - Sitemap 只收录页面路由，不收录 Markdown 镜像、llms.txt、robots.txt 或 feed；
 - 生成器按页面路由写入 Sitemap。若页面 canonical 指向其他地址，审计的 `canonical-sitemap-mismatch` 与 `verify` 的 `canonical-mismatch` 会提示，但不会自动剔除该页面。需要阻断时可使用 `auditFailOn` 或 `--fail-on-verify warning`；
@@ -552,6 +555,18 @@ geo({
 | [WebMCP Draft Community Group Report](https://webmachinelearning.github.io/webmcp/) | 浏览器运行时工具 API，不是静态规范文件，也不是 W3C 标准或标准轨道文档 |
 
 v0.1.4 不会生成以上文件，也不会把它们映射成 robots.txt 或 llms.txt 的别名。
+
+## 🆕 0.2.2 发布说明
+
+这是一次改变 Markdown 镜像内容的补丁版本。
+
+- 镜像不再输出整页 `<body>`：优先 `<main>`，其次整页唯一的 `<article>`，最后回退 `<body>`；body 回退时移除 `nav`、`aside`、`footer` 与不含标题的 `header`，避免把站点导航和页脚写入镜像；
+- 镜像开头新增 `# <title>` 与 `> <meta description>`；空值自动省略，正文首个与标题相同的 H1 会去重；
+- 移除内联 `svg`；相对 `img src` 按 HTML 文件的公开 URL 绝对化（如 `docs/index.html` 中的 `images/flow.png` → `/docs/images/flow.png`），链接 `href` 保持原样；
+- `<main>` 为空时回退 `<body>`；两者都没有可读内容时仍生成只含所有权标记与标题/描述的镜像文件；
+- 镜像路径、所有权标记、`llmsMdMirrorStyle`、alternate 发现与 `fileConflict` 策略均不变；audit/verify 仍只校验镜像路径与存在性。
+
+**迁移**：生成内容会变化，依赖镜像 diff 或快照的项目需要更新基线。需要保留完整页面时，可关闭 `llmsMdMirror`，或提供带 `rel="alternate" type="text/markdown"` 的手写 Markdown 文件——默认 `fileConflict: 'preserve'` 会保留它。
 
 ## 🆕 0.2.1 发布说明
 
