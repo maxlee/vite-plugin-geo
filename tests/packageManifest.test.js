@@ -11,7 +11,9 @@ const manifestPath = join(packageDir, 'package.json');
 
 describe('vite-plugin-geo publish manifest', () => {
   const expectedPackedFiles = [
+    'LICENSE',
     'README.md',
+    'README.zh-CN.md',
     'astro.d.ts',
     'astro.js',
     'astroSitemapCompatibility.js',
@@ -138,41 +140,48 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(packedFiles).toEqual(expectedPackedFiles);
 
     expect(packedFiles).not.toContain('DEV.md');
+    expect(packedFiles).not.toContain('CHANGELOG.md');
     expect(packedFiles).not.toContain('STANDARDS.md');
     expect(packedFiles).not.toContain('.npmignore');
     expect(packedFiles).not.toContain('scripts/build-package.mjs');
     expect(packedFiles).not.toContain('bun.lock');
     expect(packedFiles.some((path) => path.endsWith('.test.js'))).toBe(false);
     expect(packedFiles.some((path) => path.startsWith('docs/'))).toBe(false);
+    expect(packedFiles.some((path) => path.startsWith('site/'))).toBe(false);
+    expect(packedFiles.some((path) => path.startsWith('.trae/'))).toBe(false);
     expect(packedFiles.some((path) => path.startsWith('tempfiles/'))).toBe(false);
     expect(packedFiles.some((path) => path.startsWith('dist/'))).toBe(false);
   });
 
-  it('uses README as the complete user-facing standards and release guide', () => {
+  it('uses README, README.zh-CN, CHANGELOG, and LICENSE as the open-source documentation surface', () => {
     const readme = readFileSync(join(packageDir, 'README.md'), 'utf-8');
-    const developmentGuide = readFileSync(join(packageDir, 'DEV.md'), 'utf-8');
+    const readmeZh = readFileSync(join(packageDir, 'README.zh-CN.md'), 'utf-8');
+    const changelog = readFileSync(join(packageDir, 'CHANGELOG.md'), 'utf-8');
+    const license = readFileSync(join(packageDir, 'LICENSE'), 'utf-8');
 
-    expect(readme).toMatch(/^# 🌍 vite-plugin-geo/m);
-    expect(readme).toContain('## ✨ 核心特性');
-    expect(readme).toContain('## 📦 安装');
-    expect(readme).toContain('## 🚀 快速开始');
-    expect(readme).toContain('## 📄 输出文件');
-    expect(readme).toContain('## ⚙️ 配置项');
+    expect(readme).toMatch(/^# vite-plugin-geo/m);
+    expect(readme).toContain('[简体中文](./README.zh-CN.md)');
+    expect(readme).toContain('## Features');
+    expect(readme).toContain('## Installation');
+    expect(readme).toContain('## Quick start');
+    expect(readme).toContain('## Generated files');
+    expect(readme).toContain('## Configuration');
     expect(readme).toContain('<details>');
-    expect(readme).toContain('## 🔧 CLI 命令');
-    expect(readme).toContain('## 📝 行为契约');
-    expect(readme).toContain('## 💡 常见配置');
-    expect(readme).toContain('当前版本：`vite-plugin-geo@0.2.2`');
-    expect(readme).toContain('审核日期：2026-08-12');
-    expect(readme).toContain('llms.txt v2');
-    expect(readme).toContain('社区开放提案，不是 IETF/W3C 标准');
+    expect(readme).toContain('## CLI and CI verification');
+    expect(readme).toContain('## Specification contract');
+    expect(readme).toContain('## Common recipes');
+    expect(readme).toContain('## Contributing');
+    expect(readme).toContain('## License');
+    expect(readme).toContain('2026-08-12');
+    expect(readme).toContain('llms.txt` v2');
+    expect(readme).toContain('Community proposal, not an IETF or W3C standard');
     expect(readme).toContain('https://llmstxt.org/changes.html');
     expect(readme).toContain('https://www.rfc-editor.org/rfc/rfc9309');
     expect(readme).toContain('https://www.sitemaps.org/protocol.html');
     expect(readme).toContain('https://www.rssboard.org/rss-specification');
     expect(readme).toContain('https://humanstxt.org/Standard.html');
     expect(readme).toContain('https://sku.md/spec/1.0.0-beta/sku-md-spec.md');
-    expect(readme).toContain('## 🔭 已审核但不生成');
+    expect(readme).toContain('### Reviewed and intentionally not generated');
     expect(readme).toContain('IETF AIPREF');
     expect(readme).toContain('Cloudflare Content Signals');
     expect(readme).toContain('W3C TDM Reservation Protocol');
@@ -180,11 +189,22 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(readme).toContain('Shopify `agents.md`');
     expect(readme).toContain('WebMCP Draft Community Group Report');
     expect(readme).not.toContain('STANDARDS.md');
-    expect(readme).toContain('可选 Astro peer');
-    expect(developmentGuide).not.toContain('STANDARDS.md');
-    expect(developmentGuide).toContain('bun run verify:registry-metadata');
-    expect(developmentGuide).toContain('bun run verify:consumers');
-    expect(developmentGuide).toContain('再次取得明确批准');
+    expect(readme).toContain('optional peer dependency');
+
+    expect(readmeZh).toMatch(/^# vite-plugin-geo/m);
+    expect(readmeZh).toContain('[English](./README.md)');
+    expect(readmeZh).toContain('## 核心特性');
+    expect(readmeZh).toContain('可选 Astro peer');
+    expect(readmeZh).not.toContain('STANDARDS.md');
+
+    expect(changelog).toContain('## [0.2.2]');
+    expect(changelog).toContain('## [0.2.1]');
+    expect(changelog).toContain('## [0.2.0]');
+    expect(changelog).toContain('## [0.1.5]');
+    expect(changelog).toContain('## [0.1.4]');
+
+    expect(license).toContain('MIT License');
+    expect(license).toContain('Copyright (c) 2026 maxlee');
   });
 
   it('publishes only the v0.2.2 public option surface', () => {

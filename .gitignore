@@ -1,2 +1,54 @@
+# Dependencies
 node_modules/
+
+# Build, test, and verification outputs
+dist/
+dist-ssr/
+site-dist/
+coverage/
+.coverage/
+.nyc_output/
+tempfiles/
+test-fixtures/
+*.tgz
+*.sarif
+geo-report.json
+
+# Tooling and framework caches
+.cache/
+.vite/
+.astro/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# OS metadata
 .DS_Store
+Thumbs.db
+
+# Editor and AI assistant local configs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+.trae/
+.cursor/
+.claude/
+.agents/
+.audit/
+todo.md
+
+# Maintainer local notes and standalone site
+docs/
+DEV.md
+site/
