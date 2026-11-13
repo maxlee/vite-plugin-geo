@@ -14,54 +14,46 @@ describe('vite-plugin-geo publish manifest', () => {
     'LICENSE',
     'README.md',
     'README.zh-CN.md',
-    'astro.d.ts',
-    'astro.js',
-    'astroSitemapCompatibility.js',
-    'cli.js',
-    'geoAudit.js',
-    'geoBuildPipeline.js',
-    'geoGenerator.js',
-    'geoMetadataResolver.js',
-    'geoReport.js',
-    'geoVerify.js',
-    'index.d.ts',
-    'index.js',
     'package.json',
-    'viteGeoGeneratorPlugin.js',
+    'src/astro.d.ts',
+    'src/astro.js',
+    'src/astroSitemapCompatibility.js',
+    'src/cli.js',
+    'src/geoAudit.js',
+    'src/geoBuildPipeline.js',
+    'src/geoGenerator.js',
+    'src/geoMetadataResolver.js',
+    'src/geoReport.js',
+    'src/geoVerify.js',
+    'src/index.d.ts',
+    'src/index.js',
+    'src/viteGeoGeneratorPlugin.js',
   ];
 
-  it('points npm entry fields at package-root runtime files and whitelists only publishable paths', () => {
+  it('points npm entry fields at src/ runtime files and whitelists only publishable paths', () => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
 
     expect(manifest.version).toBe('0.2.2');
     expect(manifest).toMatchObject({
       name: 'vite-plugin-geo',
-      main: './index.js',
-      bin: './cli.js',
+      main: './src/index.js',
+      types: './src/index.d.ts',
+      bin: './src/cli.js',
       exports: {
-        '.': './index.js',
+        '.': {
+          types: './src/index.d.ts',
+          import: './src/index.js',
+          default: './src/index.js',
+        },
         './astro': {
-          types: './astro.d.ts',
-          import: './astro.js',
-          default: './astro.js',
+          types: './src/astro.d.ts',
+          import: './src/astro.js',
+          default: './src/astro.js',
         },
         './package.json': './package.json',
       },
       files: [
-        'README.md',
-        'astro.js',
-        'astro.d.ts',
-        'index.js',
-        'index.d.ts',
-        'cli.js',
-        'viteGeoGeneratorPlugin.js',
-        'geoBuildPipeline.js',
-        'geoAudit.js',
-        'geoVerify.js',
-        'geoReport.js',
-        'astroSitemapCompatibility.js',
-        'geoGenerator.js',
-        'geoMetadataResolver.js',
+        'src',
       ],
       publishConfig: {
         access: 'public',
@@ -208,7 +200,7 @@ describe('vite-plugin-geo publish manifest', () => {
   });
 
   it('publishes only the v0.2.2 public option surface', () => {
-    const declarations = readFileSync(join(packageDir, 'index.d.ts'), 'utf-8');
+    const declarations = readFileSync(join(packageDir, 'src', 'index.d.ts'), 'utf-8');
 
     expect(declarations).toContain("export type LastmodStrategy = 'none' | 'file-mtime' | 'build' | 'git'");
     expect(declarations).toContain("export type LlmsMdMirrorStyle = 'append' | 'replace'");
@@ -233,7 +225,7 @@ describe('vite-plugin-geo publish manifest', () => {
         '--input-type=module',
         '-e',
         `
-          const entry = await import(${JSON.stringify(pathToFileURL(join(packageDir, 'index.js')).href)});
+          const entry = await import(${JSON.stringify(pathToFileURL(join(packageDir, 'src', 'index.js')).href)});
           const defaultPlugin = typeof entry.default === 'function'
             ? entry.default({ domain: 'https://example.com' })
             : null;
@@ -269,7 +261,7 @@ describe('vite-plugin-geo publish manifest', () => {
         '--input-type=module',
         '-e',
         `
-          import geo, { createAstroGeoIntegration } from ${JSON.stringify(pathToFileURL(join(packageDir, 'astro.js')).href)};
+          import geo, { createAstroGeoIntegration } from ${JSON.stringify(pathToFileURL(join(packageDir, 'src', 'astro.js')).href)};
           const integration = geo({ domain: 'https://example.com' });
           process.stdout.write(JSON.stringify({
             defaultType: typeof geo,

@@ -13,17 +13,15 @@ import {
   generateRobotsTxt,
   generateHumansTxt,
   generateFeedXml,
-} from '../geoGenerator.js';
+} from '../src/geoGenerator.js';
 import {
   extractTeamInfoFromPackageJson,
   extractTechStackFromPackageJson,
-} from '../geoMetadataResolver.js';
+} from '../src/geoMetadataResolver.js';
 
 describe('Phase 3 - Advanced Features Tests', () => {
-  const testDir = join(process.cwd(), 'test-advanced-temp');
-  const pluginSourcePath = existsSync(join(process.cwd(), 'viteGeoGeneratorPlugin.js'))
-    ? join(process.cwd(), 'viteGeoGeneratorPlugin.js')
-    : join(process.cwd(), 'packages/vite-plugin-geo', 'viteGeoGeneratorPlugin.js');
+  const testDir = join(process.cwd(), 'tempfiles', '__geo-advanced__');
+  const pluginSourcePath = join(process.cwd(), 'src', 'viteGeoGeneratorPlugin.js');
 
   beforeEach(() => {
     try {

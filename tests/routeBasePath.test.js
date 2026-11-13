@@ -3,10 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { createGeoGeneratorPlugin } from '../viteGeoGeneratorPlugin.js';
-import { validateGeoOptions } from '../geoBuildPipeline.js';
-import { composePageUrl, normalizeRouteBasePath } from '../geoGenerator.js';
-import astroGeo from '../astro.js';
+import { createGeoGeneratorPlugin } from '../src/viteGeoGeneratorPlugin.js';
+import { validateGeoOptions } from '../src/geoBuildPipeline.js';
+import { composePageUrl, normalizeRouteBasePath } from '../src/geoGenerator.js';
+import astroGeo from '../src/astro.js';
 
 const roots = [];
 

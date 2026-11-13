@@ -4,15 +4,19 @@
   "$schema": "https://raw.githubusercontent.com/vitejs/vite-plugin-registry/refs/heads/main/data/schema/extended-package-json.schema.json",
   "description": "Vite plugin to generate sitemap.xml, llms.txt, robots.txt, and optional GEO companion files.",
   "type": "module",
-  "main": "./index.js",
-  "types": "./index.d.ts",
-  "bin": "./cli.js",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "bin": "./src/cli.js",
   "exports": {
-    ".": "./index.js",
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    },
     "./astro": {
-      "types": "./astro.d.ts",
-      "import": "./astro.js",
-      "default": "./astro.js"
+      "types": "./src/astro.d.ts",
+      "import": "./src/astro.js",
+      "default": "./src/astro.js"
     },
     "./package.json": "./package.json"
   },
@@ -22,20 +26,7 @@
     "verify:registry-metadata": "node scripts/verify-registry-metadata.mjs"
   },
   "files": [
-    "README.md",
-    "astro.js",
-    "astro.d.ts",
-    "index.js",
-    "index.d.ts",
-    "cli.js",
-    "viteGeoGeneratorPlugin.js",
-    "geoBuildPipeline.js",
-    "geoAudit.js",
-    "geoVerify.js",
-    "geoReport.js",
-    "astroSitemapCompatibility.js",
-    "geoGenerator.js",
-    "geoMetadataResolver.js"
+    "src"
   ],
   "keywords": [
     "vite",

@@ -269,7 +269,7 @@ export function createGeoGeneratorPlugin(options = {}) {
 export function resolvePluginVersion() {
   try {
     const packageJson = JSON.parse(
-      readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
+      readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
     );
     if (typeof packageJson.version === 'string' && packageJson.version.trim()) {
       return packageJson.version.trim();

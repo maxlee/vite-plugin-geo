@@ -425,6 +425,16 @@ Specification review snapshot: `2026-08-12`.
 
 Issues and pull requests are welcome at [github.com/maxlee/vite-plugin-geo](https://github.com/maxlee/vite-plugin-geo).
 
+Repository layout:
+
+```text
+vite-plugin-geo/
+├── src/        # Runtime entry points, core pipeline, audit/verify, and .d.ts types
+├── tests/      # Unit and real-framework integration tests (Vite 7/8 and Astro 7)
+├── scripts/    # Registry metadata and packed-tarball consumer verifiers
+└── .github/    # GitHub Actions CI workflows
+```
+
 Local development uses [Bun](https://bun.sh/) for test execution and Node.js (`^20.19.0 || >=22.12.0`) for consumer matrix verification:
 
 ```bash

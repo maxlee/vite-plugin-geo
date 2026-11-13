@@ -9,7 +9,6 @@ coverage/
 .coverage/
 .nyc_output/
 tempfiles/
-test-fixtures/
 *.tgz
 *.sarif
 geo-report.json

@@ -3,12 +3,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { pathToFileURL, fileURLToPath } from 'url';
-import { isCliEntrypoint, parseCliArgs, runCli, runSeoCliGenerate } from '../cli.js';
+import { isCliEntrypoint, parseCliArgs, runCli, runSeoCliGenerate } from '../src/cli.js';
 
 describe('SEO CLI', () => {
   const fixtureRoot = join(process.cwd(), 'tempfiles', '__seo-cli-fixture__');
   // 使用 import.meta.url 获取 cli.js 的绝对路径，不依赖 process.cwd()
-  const cliPath = fileURLToPath(new URL('../cli.js', import.meta.url));
+  const cliPath = fileURLToPath(new URL('../src/cli.js', import.meta.url));
   const silentLogger = {
     log: () => {},
     warn: () => {},

@@ -5,17 +5,13 @@ import { pathToFileURL } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   resolveSiteMetadataFromBuildOutput,
-} from '../geoMetadataResolver.js';
-import { extractPageMetadata } from '../geoGenerator.js';
-import { createGeoGeneratorPlugin } from '../viteGeoGeneratorPlugin.js';
+} from '../src/geoMetadataResolver.js';
+import { extractPageMetadata } from '../src/geoGenerator.js';
+import { createGeoGeneratorPlugin } from '../src/viteGeoGeneratorPlugin.js';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__vite-geo-plugin-fixture__');
-const pluginSourcePath = existsSync(join(process.cwd(), 'viteGeoGeneratorPlugin.js'))
-  ? join(process.cwd(), 'viteGeoGeneratorPlugin.js')
-  : join(process.cwd(), 'packages/vite-plugin-geo', 'viteGeoGeneratorPlugin.js');
-const pluginManifestPath = existsSync(join(process.cwd(), 'packages/vite-plugin-geo', 'package.json'))
-  ? join(process.cwd(), 'packages/vite-plugin-geo', 'package.json')
-  : join(process.cwd(), 'package.json');
+const pluginSourcePath = join(process.cwd(), 'src', 'viteGeoGeneratorPlugin.js');
+const pluginManifestPath = join(process.cwd(), 'package.json');
 const pluginSourceUrl = pathToFileURL(pluginSourcePath).href;
 
 function ensureDir(path) {

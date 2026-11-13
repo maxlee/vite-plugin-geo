@@ -10,8 +10,8 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { join, relative } from 'path';
-import { applyGeoGenerationPlanToDisk, buildGeoGenerationPlanFromDisk } from '../geoBuildPipeline.js';
-import { verifyGeoOutput } from '../geoVerify.js';
+import { applyGeoGenerationPlanToDisk, buildGeoGenerationPlanFromDisk } from '../src/geoBuildPipeline.js';
+import { verifyGeoOutput } from '../src/geoVerify.js';
 
 const roots = [];
 const siteUrl = 'https://example.test';

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   resolveGeneratedSitemapUrl,
   resolveAstroSitemapCompatibility,
-} from '../astroSitemapCompatibility.js';
+} from '../src/astroSitemapCompatibility.js';
 
 describe('Astro sitemap compatibility detection', () => {
   const fixtureRoot = join(process.cwd(), 'tempfiles', '__astro-sitemap-compatibility__');

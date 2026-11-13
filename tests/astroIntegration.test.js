@@ -4,7 +4,7 @@ import { pathToFileURL } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__astro-geo-integration__');
-const astroEntryUrl = pathToFileURL(join(process.cwd(), 'astro.js')).href;
+const astroEntryUrl = pathToFileURL(join(process.cwd(), 'src', 'astro.js')).href;
 
 function writeFixtureFile(relativePath, content) {
   const fullPath = join(fixtureRoot, relativePath);

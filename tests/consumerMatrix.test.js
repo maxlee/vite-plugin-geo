@@ -17,12 +17,13 @@ import {
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__consumer-matrix-contract__');
 const ignoredSourceDirectories = new Set([
   '.git',
+  '.trae',
   'coverage',
   'dist',
+  'docs',
   'node_modules',
+  'site',
   'tempfiles',
-  'test-llms-temp',
-  'test-temp',
 ]);
 
 function findUnresolvedMergeMarkers(root) {

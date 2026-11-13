@@ -3,7 +3,7 @@ import {
   composeMarkdownMirrorContent,
   convertHtmlToMarkdown,
   resolveMarkdownResourceBaseUrl,
-} from '../geoGenerator.js';
+} from '../src/geoGenerator.js';
 
 describe('content-focused markdown extraction', () => {
   it('prefers <main> and drops site chrome outside it', () => {

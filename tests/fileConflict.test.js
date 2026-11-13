@@ -15,8 +15,8 @@ import {
   buildGeoGenerationPlanFromDisk,
   logFileCompatibility,
   validateGeoOptions,
-} from '../geoBuildPipeline.js';
-import { parseCliArgs, runSeoCliGenerate } from '../cli.js';
+} from '../src/geoBuildPipeline.js';
+import { parseCliArgs, runSeoCliGenerate } from '../src/cli.js';
 
 const roots = [];
 

@@ -6,7 +6,7 @@ import {
   auditGeoPlan,
   collectAuditFacts,
   countAuditFindings,
-} from '../geoAudit.js';
+} from '../src/geoAudit.js';
 
 const siteUrl = 'https://example.com';
 

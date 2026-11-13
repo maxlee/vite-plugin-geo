@@ -5,8 +5,8 @@ import {
   applyGeoGenerationPlanToDisk,
   buildGeoGenerationPlanFromDisk,
   logRobotsPreservation,
-} from '../geoBuildPipeline.js';
-import { runSeoCliGenerate } from '../cli.js';
+} from '../src/geoBuildPipeline.js';
+import { runSeoCliGenerate } from '../src/cli.js';
 
 const roots = [];
 const userRobots = Buffer.from('# 手写规则\r\nUser-agent: *\r\nDisallow: /private/\r\n');

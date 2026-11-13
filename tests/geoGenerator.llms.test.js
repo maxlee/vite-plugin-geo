@@ -4,10 +4,10 @@ import { join } from 'path';
 import {
   convertHtmlToMarkdown,
   generateLlmsTxt,
-} from '../geoGenerator.js';
+} from '../src/geoGenerator.js';
 
 describe('llms.txt and Markdown generation', () => {
-  const testDir = join(process.cwd(), 'test-llms-temp');
+  const testDir = join(process.cwd(), 'tempfiles', '__geo-llms__');
 
   beforeEach(() => mkdirSync(testDir, { recursive: true }));
   afterEach(() => rmSync(testDir, { recursive: true, force: true }));

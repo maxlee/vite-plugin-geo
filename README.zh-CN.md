@@ -383,6 +383,16 @@ geo({
 
 欢迎通过 [GitHub Issues](https://github.com/maxlee/vite-plugin-geo/issues) 与 Pull Requests 参与共建。
 
+仓库目录结构：
+
+```text
+vite-plugin-geo/
+├── src/        # 运行时入口、核心生成管线、诊断/校验与 .d.ts 类型声明
+├── tests/      # 单元测试与 Vite 7/8、Astro 7 真实构建集成测试
+├── scripts/    # Vite Registry 元数据与真实消费者安装校验脚本
+└── .github/    # GitHub Actions CI 工作流
+```
+
 本地开发使用 [Bun](https://bun.sh/) 运行测试套件，并使用 Node.js（`^20.19.0 || >=22.12.0`）执行真实消费者兼容性矩阵：
 
 ```bash

@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, relative } from 'path';
-import { buildGeoGenerationPlanFromDisk } from '../geoBuildPipeline.js';
-import { dedupeHtmlFilesByPagePath, findHtmlFiles } from '../geoGenerator.js';
+import { buildGeoGenerationPlanFromDisk } from '../src/geoBuildPipeline.js';
+import { dedupeHtmlFilesByPagePath, findHtmlFiles } from '../src/geoGenerator.js';
 
 const roots = [];
 

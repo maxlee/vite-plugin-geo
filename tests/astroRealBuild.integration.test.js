@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { dirname, join } from 'path';
 import { pathToFileURL } from 'url';
 import { build as buildAstro } from 'astro';
-import { runSeoCliGenerate } from '../cli.js';
+import { runSeoCliGenerate } from '../src/cli.js';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__real-astro-builds__');
 
@@ -20,7 +20,7 @@ afterEach(() => {
 describe('real Astro builds', () => {
   it('runs after Astro sitemap when integrations are ordered sitemap() then geo()', async () => {
     const root = join(fixtureRoot, 'astro-native');
-    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'astro.js')).href;
+    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'src', 'astro.js')).href;
     writeFixture(root, 'package.json', JSON.stringify({
       name: 'astro-native-real-build',
       domain: 'https://example.com',
@@ -78,7 +78,7 @@ describe('real Astro builds', () => {
 
   it.each(['/', '/docs/'])('preserves user-owned llms/feed/robots/sitemap routes at base %s across repeated builds', async base => {
     const root = join(fixtureRoot, base === '/' ? 'user-geo-routes-root' : 'user-geo-routes-subpath');
-    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'astro.js')).href;
+    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'src', 'astro.js')).href;
     const userLlms = '# User llms\n';
     const userFeed = '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>User</title></channel></rss>';
     const userRobots = 'User-agent: *\nAllow: /\n';
@@ -120,7 +120,7 @@ describe('real Astro builds', () => {
 
   it.each(['/', '/docs/'])('preserves public robots with sitemap and default geo at base %s across repeated builds', async base => {
     const root = join(fixtureRoot, base === '/' ? 'public-robots-root' : 'public-robots-subpath');
-    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'astro.js')).href;
+    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'src', 'astro.js')).href;
     const robots = Buffer.from(`User-agent: *\nAllow: /\nSitemap: https://example.com${base}sitemap-index.xml\n`);
     writeFixture(root, 'package.json', JSON.stringify({ name: 'astro-public-robots' }));
     writeFixture(root, 'public/robots.txt', robots);

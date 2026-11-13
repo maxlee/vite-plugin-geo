@@ -11,10 +11,10 @@ import {
   filterHtmlFiles,
   normalizeFilePath,
   resolvePagePath,
-} from '../geoGenerator.js';
+} from '../src/geoGenerator.js';
 
 describe('Core Functionality Tests', () => {
-  const testDir = join(process.cwd(), 'test-temp');
+  const testDir = join(process.cwd(), 'tempfiles', '__geo-generator__');
 
   beforeEach(() => {
     // Create test directory

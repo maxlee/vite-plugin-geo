@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { parseCliArgs, runCli } from '../cli.js';
+import { parseCliArgs, runCli } from '../src/cli.js';
 
 const roots = [];
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildGeoGenerationPlanFromDisk } from '../geoBuildPipeline.js';
+import { buildGeoGenerationPlanFromDisk } from '../src/geoBuildPipeline.js';
 
 const roots = [];
 
