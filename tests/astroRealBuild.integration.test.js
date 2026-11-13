@@ -150,4 +150,72 @@ describe('real Astro builds', () => {
     }
   }, 30_000);
 
+  it('excludes Astro redirect HTML stubs from sitemap, llms.txt, feed.xml, and Markdown mirrors', async () => {
+    const root = join(fixtureRoot, 'astro-redirects');
+    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'src', 'astro.js')).href;
+    writeFixture(root, 'package.json', JSON.stringify({ name: 'astro-redirects-real-build' }));
+    writeFixture(root, 'src/pages/index.astro', '<html lang="en"><head><title>Home</title><meta name="description" content="Home page"></head><body><h1>Home</h1></body></html>');
+    writeFixture(root, 'src/pages/blog/[slug].astro', '---\nexport function getStaticPaths() { return [{ params: { slug: "launch" } }]; }\n---\n<html lang="en"><head><title>Launch</title><meta name="description" content="Launch post"></head><body><h1>Launch</h1></body></html>');
+    writeFixture(root, 'astro.config.mjs', `
+      import { defineConfig } from 'astro/config';
+      import geo from ${JSON.stringify(astroEntryUrl)};
+      export default defineConfig({
+        site: 'https://example.com',
+        redirects: {
+          '/old': '/blog/launch',
+          '/legacy/[slug]': '/blog/[slug]',
+        },
+        integrations: [geo()],
+      });
+    `);
+
+    await buildAstro({ root, logLevel: 'silent' });
+
+    const distDir = join(root, 'dist');
+    expect(existsSync(join(distDir, 'old', 'index.html'))).toBe(true);
+    expect(existsSync(join(distDir, 'legacy', 'launch', 'index.html'))).toBe(true);
+    expect(existsSync(join(distDir, 'old.md'))).toBe(false);
+    expect(existsSync(join(distDir, 'legacy', 'launch.md'))).toBe(false);
+    expect(existsSync(join(distDir, 'blog', 'launch.md'))).toBe(true);
+
+    const sitemap = readFileSync(join(distDir, 'sitemap.xml'), 'utf-8');
+    expect(sitemap).toContain('<loc>https://example.com/blog/launch</loc>');
+    expect(sitemap).not.toContain('/old');
+    expect(sitemap).not.toContain('/legacy');
+
+    const llms = readFileSync(join(distDir, 'llms.txt'), 'utf-8');
+    expect(llms).toContain('https://example.com/blog/launch');
+    expect(llms).not.toContain('/old');
+    expect(llms).not.toContain('/legacy');
+
+    const feed = readFileSync(join(distDir, 'feed.xml'), 'utf-8');
+    expect(feed).not.toContain('/old');
+    expect(feed).not.toContain('/legacy');
+  }, 30_000);
+
+  it("matches Astro build.format: 'file' HTML filenames and emits .html URLs by default", async () => {
+    const root = join(fixtureRoot, 'astro-file-format');
+    const astroEntryUrl = pathToFileURL(join(process.cwd(), 'src', 'astro.js')).href;
+    writeFixture(root, 'package.json', JSON.stringify({ name: 'astro-file-format-real-build' }));
+    writeFixture(root, 'src/pages/index.astro', '<html lang="en"><head><title>Home</title><meta name="description" content="Home"></head><body><h1>Home</h1></body></html>');
+    writeFixture(root, 'src/pages/about.astro', '<html lang="en"><head><title>About</title><meta name="description" content="About page"></head><body><h1>About</h1></body></html>');
+    writeFixture(root, 'astro.config.mjs', `
+      import { defineConfig } from 'astro/config';
+      import geo from ${JSON.stringify(astroEntryUrl)};
+      export default defineConfig({
+        site: 'https://example.com',
+        build: { format: 'file' },
+        integrations: [geo({ generateFeed: false })],
+      });
+    `);
+
+    await buildAstro({ root, logLevel: 'silent' });
+
+    const distDir = join(root, 'dist');
+    expect(existsSync(join(distDir, 'about.html'))).toBe(true);
+    expect(existsSync(join(distDir, 'about.html.md'))).toBe(true);
+    expect(readFileSync(join(distDir, 'sitemap.xml'), 'utf-8')).toContain('<loc>https://example.com/about.html</loc>');
+    expect(readFileSync(join(distDir, 'llms.txt'), 'utf-8')).toContain('https://example.com/about.html');
+  }, 30_000);
+
 });

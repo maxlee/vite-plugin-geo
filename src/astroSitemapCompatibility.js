@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, resolve } from 'path';
+import { compareCodeUnits } from './geoGenerator.js';
 
 const DEFAULT_GEO_SITEMAP_URL = 'sitemap.xml';
 
@@ -29,7 +30,7 @@ export function isAstroProject(projectRoot) {
 function findGeneratedSitemap(distDir) {
   if (!existsSync(distDir)) return null;
   const candidates = readdirSync(distDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.xml'))
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.xml'))
     .map((entry) => {
       const content = readFileSync(join(distDir, entry.name), 'utf-8');
       return {
@@ -41,7 +42,7 @@ function findGeneratedSitemap(distDir) {
     .filter(({ isSitemap }) => isSitemap)
     .sort((a, b) => {
       if (a.isIndex !== b.isIndex) return a.isIndex ? -1 : 1;
-      return a.filename.localeCompare(b.filename);
+      return compareCodeUnits(a.filename, b.filename);
     });
   return candidates[0]?.filename || null;
 }

@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
   applyGeoGenerationPlanToDisk,
+  buildGeoGenerationPlan,
   buildGeoGenerationPlanFromDisk,
+  validateGeoOptions,
 } from '../src/geoBuildPipeline.js';
 
 describe('shared GEO generation pipeline', () => {
@@ -113,5 +115,81 @@ describe('shared GEO generation pipeline', () => {
     expect(existsSync(join(distDir, 'sitemap.xml'))).toBe(false);
     expect(existsSync(join(distDir, 'llms.txt'))).toBe(false);
     expect(readFileSync(join(distDir, 'index.html'), 'utf-8')).not.toContain('application/rss+xml');
+  });
+
+  it('rejects path traversal in htmlInputs and applyGeoGenerationPlanToDisk', async () => {
+    await expect(buildGeoGenerationPlan({
+      projectRoot: fixtureRoot,
+      distDir,
+      htmlInputs: [{ relativePath: '../../evil.html', htmlContent: '<html></html>' }],
+      options: {},
+      currentDate: '2026-07-29T00:00:00.000Z',
+    })).rejects.toThrow(/escapes the output directory/i);
+
+    expect(() => applyGeoGenerationPlanToDisk({
+      files: [{ filename: '../escaped.txt', content: 'x' }],
+      htmlUpdates: [],
+    }, { distDir })).toThrow(/escapes the output directory/i);
+  });
+
+  it('validates invalid option shapes upfront in validateGeoOptions', () => {
+    expect(() => validateGeoOptions(null)).toThrow(/object/i);
+    expect(() => validateGeoOptions({ robotsDirectives: 'Disallow: /' })).toThrow(/must be an array/i);
+    expect(() => validateGeoOptions({ sitemapUrl: 'https://example.com/sitemap.xml\nDisallow: /' })).toThrow(/control characters/i);
+    expect(() => validateGeoOptions({ sitemapUrl: 'javascript:alert(1)' })).toThrow(/http:\/\/ or https:\/\//i);
+    expect(() => validateGeoOptions({ sitemapMaxBytes: 60_000_000 })).toThrow(/52,428,800/);
+    expect(() => validateGeoOptions({ llmsSections: { Docs: 123 } })).toThrow(/string or an array/i);
+    expect(() => validateGeoOptions({ skuMd: { catalog: [] } })).toThrow(/skuMd\.catalog/i);
+  });
+
+  it('surfaces malformed package.json errors and non-directory distDir errors', async () => {
+    writeFileSync(join(fixtureRoot, 'package.json'), '{ invalid json');
+    await expect(buildGeoGenerationPlanFromDisk({
+      projectRoot: fixtureRoot,
+      distDir,
+      options: {},
+      currentDate: '2026-07-29T00:00:00.000Z',
+    })).rejects.toThrow(/Invalid package\.json/i);
+
+    const fileAsDist = join(fixtureRoot, 'not-a-dir.txt');
+    writeFileSync(fileAsDist, 'oops');
+    await expect(buildGeoGenerationPlanFromDisk({
+      projectRoot: fixtureRoot,
+      distDir: fileAsDist,
+      options: {},
+      currentDate: '2026-07-29T00:00:00.000Z',
+    })).rejects.toThrow(/not a directory/i);
+  });
+
+  it('escapes sku.md Markdown links and resolves relative markdown alternates on nested index pages', async () => {
+    mkdirSync(join(distDir, 'docs'), { recursive: true });
+    writeFileSync(
+      join(distDir, 'docs', 'index.html'),
+      '<!doctype html><html lang="en"><head><title>Docs</title><meta name="description" content="Docs desc"><link rel="alternate" type="text/markdown" href="index.md"></head><body><h1>Docs</h1></body></html>',
+    );
+    writeFileSync(join(distDir, 'docs', 'index.md'), '<!-- custom user markdown -->\n');
+
+    const plan = await buildGeoGenerationPlanFromDisk({
+      projectRoot: fixtureRoot,
+      distDir,
+      options: {
+        generateFeed: false,
+        skuMd: {
+          merchantName: 'Shop [Best]',
+          summary: 'Store summary',
+          catalog: [{ label: 'Deals', url: 'https://example.com/a)b' }],
+        },
+      },
+      currentDate: '2026-07-29T00:00:00.000Z',
+    });
+
+    const skuMd = plan.files.find(({ filename }) => filename === 'sku.md')?.content;
+    expect(skuMd).toContain('Website: [Shop \\[Best\\]](https://example.com/)');
+    expect(skuMd).toContain('- [Deals](https://example.com/a%29b)');
+
+    const docsUpdate = plan.htmlUpdates.find(({ filename }) => filename === 'docs/index.html')?.content;
+    expect(docsUpdate).not.toContain('href="https://example.com/docs/index.md"');
+    expect(plan.files.find(({ filename }) => filename === 'llms.txt')?.content)
+      .toContain('https://example.com/docs/index.md');
   });
 });

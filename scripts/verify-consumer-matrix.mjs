@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ASTRO_RELEASES,
+  VITE_PLUS_RELEASES,
   VITE_RELEASES,
   assertGeneratedCoreFiles,
 } from './consumer-matrix-contract.mjs';
@@ -47,7 +48,7 @@ function run(command, args, options = {}) {
   });
 }
 
-async function installFixture(root, dependencies) {
+async function installFixture(root, dependencies, { npmCacheDir, ...extraManifest } = {}) {
   await mkdir(root, { recursive: true });
   await writeFile(
     join(root, 'package.json'),
@@ -56,6 +57,7 @@ async function installFixture(root, dependencies) {
       private: true,
       type: 'module',
       dependencies,
+      ...extraManifest,
     }, null, 2)}\n`,
     'utf-8',
   );
@@ -72,10 +74,31 @@ async function installFixture(root, dependencies) {
       cwd: root,
       env: {
         ...process.env,
+        ...(npmCacheDir ? { npm_config_cache: npmCacheDir } : {}),
         npm_config_ignore_scripts: 'true',
       },
     },
   );
+}
+
+async function runTypeScriptCheck(root) {
+  await writeFile(
+    join(root, 'tsconfig.json'),
+    `${JSON.stringify({
+      compilerOptions: {
+        target: 'ES2023',
+        module: 'ESNext',
+        moduleResolution: 'bundler',
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+      },
+      include: ['*.ts'],
+    }, null, 2)}\n`,
+    'utf-8',
+  );
+  const tscBin = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
+  await run(process.execPath, [tscBin, '--noEmit'], { cwd: root });
 }
 
 async function readInstalledManifest(root, packageName) {
@@ -88,11 +111,15 @@ async function readInstalledVersion(root, packageName) {
   return (await readInstalledManifest(root, packageName)).version;
 }
 
-async function verifyViteRelease(root, tarballPath, viteVersion) {
-  await installFixture(root, {
-    vite: viteVersion,
-    'vite-plugin-geo': `file:${tarballPath}`,
-  });
+async function verifyViteRelease(root, tarballPath, viteVersion, { npmCacheDir } = {}) {
+  await installFixture(
+    root,
+    {
+      vite: viteVersion,
+      'vite-plugin-geo': `file:${tarballPath}`,
+    },
+    { npmCacheDir },
+  );
   await writeFile(
     join(root, 'index.html'),
     '<!doctype html><html lang="en"><head><title>GEO Vite consumer</title><meta name="description" content="Consumer matrix"></head><body><h1>Home</h1><a href="/about.html">About</a></body></html>',
@@ -125,13 +152,21 @@ async function verifyViteRelease(root, tarballPath, viteVersion) {
   assertGeneratedCoreFiles(join(root, 'dist'), EXPECTED_DOMAIN);
 }
 
-async function verifyAstroRelease(root, tarballPath, astroVersion) {
+async function verifyAstroRelease(root, tarballPath, astroVersion, { npmCacheDir } = {}) {
   const viteVersion = astroVersion === '7.0.0' ? '8.0.0' : '8.2.1';
-  await installFixture(root, {
-    astro: astroVersion,
-    vite: viteVersion,
-    'vite-plugin-geo': `file:${tarballPath}`,
-  });
+  const checkAstroTypes = astroVersion === ASTRO_RELEASES[ASTRO_RELEASES.length - 1];
+  await installFixture(
+    root,
+    {
+      astro: astroVersion,
+      vite: viteVersion,
+      'vite-plugin-geo': `file:${tarballPath}`,
+    },
+    {
+      npmCacheDir,
+      ...(checkAstroTypes ? { devDependencies: { typescript: '^5.8.0' } } : {}),
+    },
+  );
   await mkdir(join(root, 'src', 'pages'), { recursive: true });
   await writeFile(
     join(root, 'src', 'pages', 'index.astro'),
@@ -176,6 +211,194 @@ async function verifyAstroRelease(root, tarballPath, astroVersion) {
     { cwd: root },
   );
   assertGeneratedCoreFiles(join(root, 'dist'), EXPECTED_DOMAIN);
+
+  if (checkAstroTypes) {
+    await writeFile(
+      join(root, 'typecheck.ts'),
+      [
+        "import { defineConfig } from 'astro/config';",
+        "import geoAstro from 'vite-plugin-geo/astro';",
+        "import geo, { createJsonReport, createSarifReport, type GeoPageModel, type WriteReportOptions } from 'vite-plugin-geo';",
+        '',
+        'export const writeOptions: WriteReportOptions = {',
+        "  format: 'json',",
+        "  report: createJsonReport({ command: 'verify' }),",
+        '  stdout: { write: () => true },',
+        '};',
+        'export const sarifReport = createSarifReport({});',
+        'export const geoPlugin = geo({',
+        `  domain: '${EXPECTED_DOMAIN}',`,
+        '  lastmodResolver(page: GeoPageModel) {',
+        '    return page.pageUrl ? null : undefined;',
+        '  },',
+        '});',
+        'export default defineConfig({',
+        `  site: '${EXPECTED_DOMAIN}',`,
+        `  integrations: [geoAstro({ domain: '${EXPECTED_DOMAIN}' })],`,
+        '});',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    await runTypeScriptCheck(root);
+  }
+}
+
+async function verifyVitePlusRelease(root, tarballPath, vitePlusVersion, { npmCacheDir } = {}) {
+  await installFixture(
+    root,
+    {
+      'vite-plus': vitePlusVersion,
+      'vite-plugin-geo': `file:${tarballPath}`,
+    },
+    {
+      npmCacheDir,
+      devDependencies: {
+        typescript: '^5.8.0',
+      },
+      overrides: {
+        vite: `npm:@voidzero-dev/vite-plus-core@${vitePlusVersion}`,
+      },
+    },
+  );
+
+  await writeFile(
+    join(root, '.gitignore'),
+    'node_modules\ndist\n',
+    'utf-8',
+  );
+  await writeFile(
+    join(root, 'index.html'),
+    '<!doctype html><html lang="en"><head><title>GEO Vite+ consumer</title><meta name="description" content="Consumer matrix"></head><body><h1>Home</h1><a href="/about.html">About</a></body></html>',
+    'utf-8',
+  );
+  await writeFile(
+    join(root, 'about.html'),
+    '<!doctype html><html lang="en"><head><title>About GEO</title><meta name="description" content="About consumer matrix"></head><body><h1>About</h1></body></html>',
+    'utf-8',
+  );
+  await writeFile(
+    join(root, 'vite.config.ts'),
+    [
+      "import { defineConfig, lazyPlugins } from 'vite-plus';",
+      "import geo, { type GeoPageModel } from 'vite-plugin-geo';",
+      '',
+      'export default defineConfig({',
+      '  lint: {',
+      '    options: {',
+      '      typeAware: true,',
+      '      typeCheck: true,',
+      '    },',
+      '  },',
+      '  build: {',
+      '    rollupOptions: {',
+      "      input: ['index.html', 'about.html'],",
+      '    },',
+      '  },',
+      '  plugins: lazyPlugins(() => [',
+      '    geo({',
+      `      domain: '${EXPECTED_DOMAIN}',`,
+      '      debug: true,',
+      '      generateHumans: true,',
+      '      lastmodResolver(page: GeoPageModel) {',
+      '        return page.pageUrl ? null : undefined;',
+      '      },',
+      '    }),',
+      '  ]),',
+      '});',
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+  await writeFile(
+    join(root, 'typecheck.ts'),
+    [
+      "import geo, { createJsonReport, createSarifReport, type GeoPageModel, type WriteReportOptions } from 'vite-plugin-geo';",
+      '',
+      "export const report = createJsonReport({ command: 'verify' });",
+      'export const sarif = createSarifReport({});',
+      'export const writeOptions: WriteReportOptions = {',
+      "  format: 'json',",
+      '  report,',
+      '  stdout: { write: () => true },',
+      '};',
+      'export const plugin = geo({',
+      `  domain: '${EXPECTED_DOMAIN}',`,
+      '  lastmodResolver(page: GeoPageModel) {',
+      '    return page.pageUrl ? null : undefined;',
+      '  },',
+      '});',
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+
+  const installedVitePlus = await readInstalledVersion(root, 'vite-plus');
+  const installedViteManifest = await readInstalledManifest(root, 'vite');
+  const installedGeo = await readInstalledVersion(root, 'vite-plugin-geo');
+  if (
+    installedVitePlus !== vitePlusVersion
+    || installedViteManifest.name !== '@voidzero-dev/vite-plus-core'
+    || installedGeo !== expectedPluginVersion
+  ) {
+    throw new Error(
+      `Unexpected Vite+ fixture versions: vite-plus=${installedVitePlus}, vite=${installedViteManifest.name}@${installedViteManifest.version}, geo=${installedGeo}`,
+    );
+  }
+
+  // Probe config metadata resolution with VP_RESOLVING_CONFIG_METADATA=1 + lazyPlugins
+  const metadataProbe = await run(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      [
+        "import { resolveConfigFromFile } from 'vite-plus';",
+        "const config = await resolveConfigFromFile('./vite.config.ts');",
+        "if (config.plugins.some((p) => p?.name === 'geo-generator')) {",
+        "  throw new Error('Expected lazyPlugins to skip geo-generator during metadata resolution');",
+        '}',
+      ].join('\n'),
+    ],
+    {
+      cwd: root,
+      capture: true,
+      env: {
+        ...process.env,
+        VP_RESOLVING_CONFIG_METADATA: '1',
+      },
+    },
+  );
+  if (metadataProbe.stdout.includes('vite-plugin-geo v') || metadataProbe.stderr.includes('vite-plugin-geo v')) {
+    throw new Error('Unexpected vite-plugin-geo banner during VP_RESOLVING_CONFIG_METADATA=1 config resolution');
+  }
+
+  await runTypeScriptCheck(root);
+
+  const vpBin = join(root, 'node_modules', 'vite-plus', 'bin', 'vp');
+  const lintResult = await run(process.execPath, [vpBin, 'lint'], {
+    cwd: root,
+    capture: true,
+  });
+  if (lintResult.stdout.includes('vite-plugin-geo v') || lintResult.stderr.includes('vite-plugin-geo v')) {
+    throw new Error('Unexpected vite-plugin-geo banner during vp lint');
+  }
+
+  await run(process.execPath, [vpBin, 'build'], { cwd: root });
+  const distDir = join(root, 'dist');
+  assertGeneratedCoreFiles(distDir, EXPECTED_DOMAIN);
+
+  const humansContent = await readFile(join(distDir, 'humans.txt'), 'utf-8');
+  if (!humansContent.includes('vite-plus')) {
+    throw new Error('Expected humans.txt to detect vite-plus in Components');
+  }
+
+  const geoCli = join(root, 'node_modules', 'vite-plugin-geo', 'src', 'cli.js');
+  await run(
+    process.execPath,
+    [geoCli, 'verify', '--dist-dir', 'dist', '--domain', EXPECTED_DOMAIN],
+    { cwd: root },
+  );
 }
 
 async function packRelease(tempRoot) {
@@ -203,6 +426,7 @@ async function packRelease(tempRoot) {
 
 export async function verifyConsumerMatrix() {
   const tempRoot = await mkdtemp(join(tmpdir(), 'vite-plugin-geo-consumers-'));
+  const npmCacheDir = join(tempRoot, 'npm-cache');
   try {
     const { tarballPath, packResult } = await packRelease(tempRoot);
     for (const viteVersion of VITE_RELEASES) {
@@ -210,6 +434,7 @@ export async function verifyConsumerMatrix() {
         join(tempRoot, `vite-${viteVersion}`),
         tarballPath,
         viteVersion,
+        { npmCacheDir },
       );
     }
     for (const astroVersion of ASTRO_RELEASES) {
@@ -217,6 +442,15 @@ export async function verifyConsumerMatrix() {
         join(tempRoot, `astro-${astroVersion}`),
         tarballPath,
         astroVersion,
+        { npmCacheDir },
+      );
+    }
+    for (const vitePlusVersion of VITE_PLUS_RELEASES) {
+      await verifyVitePlusRelease(
+        join(tempRoot, `vite-plus-${vitePlusVersion}`),
+        tarballPath,
+        vitePlusVersion,
+        { npmCacheDir },
       );
     }
     return {
@@ -224,6 +458,7 @@ export async function verifyConsumerMatrix() {
       integrity: packResult.integrity,
       vite: [...VITE_RELEASES],
       astro: [...ASTRO_RELEASES],
+      vitePlus: [...VITE_PLUS_RELEASES],
     };
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

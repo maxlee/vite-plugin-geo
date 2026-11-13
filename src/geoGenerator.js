@@ -10,7 +10,7 @@ import TurndownService from 'turndown';
 import { collectAuditFacts } from './geoAudit.js';
 
 const DEFAULT_STRIP_PATH_PREFIXES = ['src/pages/'];
-const DEFAULT_EXCLUDE_PATTERNS = ['404.html', '500.html'];
+export const DEFAULT_EXCLUDE_PATTERNS = ['404.html', '500.html'];
 const MARKDOWN_STRIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'svg']);
 const MARKDOWN_BODY_CHROME_TAGS = new Set(['nav', 'aside', 'footer']);
 const MARKDOWN_BODY_CHROME_ROLES = new Set(['navigation', 'complementary', 'contentinfo']);
@@ -19,6 +19,78 @@ const ABSOLUTE_URL_SCHEME_PATTERN = /^[a-z][a-z\d+.-]*:/i;
 const LEADING_H1_PATTERN = /^#(?!#)\s+(.+?)(?:\s+#+)?\s*$/;
 const SITEMAP_MAX_URLS = 50000;
 const SITEMAP_MAX_BYTES = 52_428_800;
+
+/**
+ * Compare strings deterministically by UTF-16 code units (locale-independent).
+ * @param {string} left - First string
+ * @param {string} right - Second string
+ * @returns {-1|0|1} Comparison result
+ */
+export function compareCodeUnits(left, right) {
+  const a = String(left ?? '');
+  const b = String(right ?? '');
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/**
+ * Return true when targetPath resolves inside (or equal to) baseDir.
+ * @param {string} baseDir - Directory boundary
+ * @param {string} targetPath - Candidate path
+ * @returns {boolean} True if contained within baseDir
+ */
+export function isWithinDir(baseDir, targetPath) {
+  if (typeof baseDir !== 'string' || typeof targetPath !== 'string' || !baseDir || !targetPath) {
+    return false;
+  }
+  const resolvedBase = resolve(baseDir);
+  const resolvedTarget = resolve(targetPath);
+  const rel = relative(resolvedBase, resolvedTarget);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * Strip ASCII control characters from output text safely.
+ * @param {unknown} value - Candidate value
+ * @param {{preserveNewlines?: boolean}} [options={}] - Sanitization options
+ * @returns {string} Sanitized text
+ */
+export function sanitizeControlChars(value, { preserveNewlines = false } = {}) {
+  const str = String(value ?? '');
+  if (preserveNewlines) {
+    return str
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+  }
+  return str
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\u0000-\u001F\u007F]/g, '');
+}
+
+/**
+ * Assert that a file path is a safe relative path that does not escape its base directory.
+ * @param {unknown} filePath - Candidate relative path
+ * @param {string} [label='path'] - Error context label
+ * @returns {string} Canonical normalized POSIX relative path
+ */
+export function assertSafeRelativePath(filePath, label = 'path') {
+  if (typeof filePath !== 'string' || !filePath.trim()) {
+    throw new Error(`Invalid ${label}: expected a non-empty relative path.`);
+  }
+  if (/[\u0000-\u001f\u007f]/.test(filePath)) {
+    throw new Error(`Invalid ${label}: "${filePath}" contains control characters.`);
+  }
+  const posix = filePath.replace(/\\/g, '/');
+  if (posix.startsWith('/') || /^[a-zA-Z]:(?:\/|$)/.test(posix)) {
+    throw new Error(`Invalid ${label}: "${filePath}" must be a relative path.`);
+  }
+  const segments = posix.split('/').filter((segment) => segment && segment !== '.');
+  if (segments.length === 0 || segments.some((segment) => segment === '..')) {
+    throw new Error(`Invalid ${label}: "${filePath}" escapes the output directory.`);
+  }
+  return segments.join('/');
+}
 
 const turndownService = new TurndownService({
   headingStyle: 'atx',
@@ -191,21 +263,41 @@ function findNodesByTagName(node, tagName, matches = []) {
   return matches;
 }
 
-function isValidLanguageTag(languageTag, { allowXDefault = false } = {}) {
-  if (allowXDefault && languageTag === 'x-default') {
+export function isValidLanguageTag(languageTag, { allowXDefault = false } = {}) {
+  const tag = typeof languageTag === 'string' ? languageTag.trim() : '';
+  if (!tag) {
+    return false;
+  }
+
+  if (allowXDefault && tag.toLowerCase() === 'x-default') {
     return true;
   }
 
-  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(languageTag)) {
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$/.test(tag)) {
     return false;
   }
 
   try {
-    Intl.getCanonicalLocales(languageTag);
+    Intl.getCanonicalLocales(tag);
     return true;
   } catch {
     return false;
   }
+}
+
+function cloneAstNode(node) {
+  if (!node || typeof node !== 'object') {
+    return node;
+  }
+  const cloned = { ...node };
+  delete cloned.parentNode;
+  if (Array.isArray(node.attrs)) {
+    cloned.attrs = node.attrs.map((attr) => ({ ...attr }));
+  }
+  if (Array.isArray(node.childNodes)) {
+    cloned.childNodes = node.childNodes.map((child) => cloneAstNode(child));
+  }
+  return cloned;
 }
 
 /**
@@ -232,13 +324,96 @@ const XML_ENTITIES = {
   "'": '&apos;',
 };
 
+const DECODED_XML_ENTITIES = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+};
+
 /**
- * Escape XML special characters (internal helper).
- * @param {string} str - Raw string
+ * Escape XML special characters and strip XML 1.0 illegal control characters.
+ * @param {unknown} str - Raw value
  * @returns {string} Escaped XML-safe string
  */
-function escapeXml(str) {
-  return String(str).replace(/[&<>"']/g, (char) => XML_ENTITIES[char]);
+export function escapeXml(str) {
+  return String(str ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    .replace(/[&<>"']/g, (char) => XML_ENTITIES[char]);
+}
+
+/**
+ * Escape special characters for HTML attribute values.
+ * @param {unknown} str - Raw attribute value
+ * @returns {string} Escaped HTML-attribute-safe string
+ */
+export function escapeHtmlAttribute(str) {
+  return sanitizeControlChars(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Decode standard XML named and numeric entities safely in a single pass.
+ * Out-of-range or surrogate numeric code points are left un-decoded rather than throwing.
+ * @param {unknown} value - XML text
+ * @returns {string} Decoded text
+ */
+export function decodeXmlEntities(value) {
+  return String(value ?? '').replace(/&(#x?[0-9a-fA-F]+|amp|lt|gt|quot|apos);/g, (match, entity) => {
+    if (entity.startsWith('#x') || entity.startsWith('#X')) {
+      const codePoint = Number.parseInt(entity.slice(2), 16);
+      if (!Number.isInteger(codePoint) || codePoint < 1 || codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF)) {
+        return match;
+      }
+      return String.fromCodePoint(codePoint);
+    }
+    if (entity.startsWith('#')) {
+      const codePoint = Number.parseInt(entity.slice(1), 10);
+      if (!Number.isInteger(codePoint) || codePoint < 1 || codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF)) {
+        return match;
+      }
+      return String.fromCodePoint(codePoint);
+    }
+    return DECODED_XML_ENTITIES[entity] ?? match;
+  });
+}
+
+export function escapeMarkdownLinkLabel(label) {
+  return sanitizeControlChars(label)
+    .replace(/\\/g, '\\\\')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .trim();
+}
+
+export function escapeMarkdownLinkDestination(destination) {
+  return sanitizeControlChars(destination)
+    .trim()
+    .replace(/\(/g, '%28')
+    .replace(/\)/g, '%29')
+    .replace(/\s+/g, '%20');
+}
+
+function stripConfiguredPrefixes(filePath, stripPathPrefixes) {
+  const normalizedPrefixes = (stripPathPrefixes || DEFAULT_STRIP_PATH_PREFIXES)
+    .map((prefix) => normalizeFilePath(prefix).replace(/\/+$/, ''))
+    .filter(Boolean);
+
+  let current = filePath;
+  for (const prefix of normalizedPrefixes) {
+    if (current === prefix) {
+      return '';
+    }
+    if (current.startsWith(`${prefix}/`)) {
+      return current.slice(prefix.length + 1);
+    }
+  }
+  return current;
 }
 
 function getPageModel(options, filePath) {
@@ -257,7 +432,10 @@ function getPageModel(options, filePath) {
  * @returns {string} POSIX-like path
  */
 export function normalizeFilePath(filePath) {
-  return filePath
+  if (filePath === undefined || filePath === null) {
+    return '';
+  }
+  return String(filePath)
     .replace(/\\/g, '/')
     .replace(/^\.\/+/, '')
     .replace(/^\/+/, '');
@@ -281,21 +459,22 @@ export function extractLastmod(filePath, strategy, buildDate, context = {}) {
   }
 
   if (strategy === 'build') {
-    return buildDate;
+    return buildDate || null;
   }
 
   if (strategy === 'git') {
     try {
-      if (!existsSync(filePath)) {
+      const resolvedPath = filePath ? resolve(filePath) : '';
+      if (!resolvedPath || !existsSync(resolvedPath)) {
         warn(`⚠️  [Non-fatal] File not found for git lastmod: ${filePath}, omitting lastmod`);
         return null;
       }
 
       const result = spawnSync(
         'git',
-        ['log', '-1', '--format=%cI', '--', filePath],
+        ['log', '-1', '--format=%cI', '--', basename(resolvedPath)],
         {
-          cwd: dirname(filePath),
+          cwd: dirname(resolvedPath),
           encoding: 'utf-8',
         },
       );
@@ -304,15 +483,20 @@ export function extractLastmod(filePath, strategy, buildDate, context = {}) {
       if (gitTimestamp) {
         return gitTimestamp;
       }
-    } catch {
-      // Omit unverifiable timestamps.
+      if (result.error) {
+        warn(`⚠️  [Non-fatal] Failed to execute git lastmod for ${filePath}: ${result.error.message}, omitting lastmod`);
+        return null;
+      }
+    } catch (error) {
+      warn(`⚠️  [Non-fatal] Failed git lastmod for ${filePath}: ${error.message}, omitting lastmod`);
+      return null;
     }
     warn(`⚠️  [Non-fatal] No git timestamp for ${filePath}, omitting lastmod`);
     return null;
   }
 
   try {
-    if (!existsSync(filePath)) {
+    if (!filePath || !existsSync(filePath)) {
       warn(`⚠️  [Non-fatal] File not found for mtime: ${filePath}, omitting lastmod`);
       return null;
     }
@@ -343,33 +527,35 @@ export function resolveLastmodSourcePath(distHtmlFilePath, distDir, options = {}
   const sourceHtmlDir = options.sourceHtmlDir || 'src/pages';
   const projectRoot = options.projectRoot || process.cwd();
   const sourceRoot = isAbsolute(sourceHtmlDir)
-    ? sourceHtmlDir
+    ? resolve(sourceHtmlDir)
     : resolve(projectRoot, sourceHtmlDir);
 
-  const relativePath = normalizeFilePath(relative(distDir, distHtmlFilePath));
-  const stripPathPrefixes = (options.stripPathPrefixes || DEFAULT_STRIP_PATH_PREFIXES)
-    .map((prefix) => normalizeFilePath(prefix).replace(/\/+$/, ''))
-    .filter((prefix) => prefix.length > 0);
+  if (isWithinDir(distDir, distHtmlFilePath)) {
+    const relativePath = normalizeFilePath(relative(distDir, distHtmlFilePath));
+    const stripPathPrefixes = (options.stripPathPrefixes || DEFAULT_STRIP_PATH_PREFIXES)
+      .map((prefix) => normalizeFilePath(prefix).replace(/\/+$/, ''))
+      .filter((prefix) => prefix.length > 0);
 
-  const sourceCandidates = new Set([relativePath]);
+    const sourceCandidates = new Set([relativePath]);
 
-  stripPathPrefixes.forEach((prefix) => {
-    if (relativePath === prefix) {
-      sourceCandidates.add('');
-      return;
-    }
-    if (relativePath.startsWith(`${prefix}/`)) {
-      sourceCandidates.add(relativePath.slice(prefix.length + 1));
-    }
-  });
+    stripPathPrefixes.forEach((prefix) => {
+      if (relativePath === prefix) {
+        sourceCandidates.add('');
+        return;
+      }
+      if (relativePath.startsWith(`${prefix}/`)) {
+        sourceCandidates.add(relativePath.slice(prefix.length + 1));
+      }
+    });
 
-  for (const candidate of sourceCandidates) {
-    if (!candidate) {
-      continue;
-    }
-    const sourceCandidatePath = resolve(sourceRoot, candidate);
-    if (existsSync(sourceCandidatePath)) {
-      return sourceCandidatePath;
+    for (const candidate of sourceCandidates) {
+      if (!candidate) {
+        continue;
+      }
+      const sourceCandidatePath = resolve(sourceRoot, candidate);
+      if (isWithinDir(sourceRoot, sourceCandidatePath) && existsSync(sourceCandidatePath)) {
+        return sourceCandidatePath;
+      }
     }
   }
 
@@ -380,29 +566,22 @@ export function resolveLastmodSourcePath(distHtmlFilePath, distDir, options = {}
   return null;
 }
 
+function hasNoindexMeta(metaNodes) {
+  return metaNodes.some((node) => {
+    const name = getAttribute(node, 'name').toLowerCase().trim();
+    const content = getAttribute(node, 'content').toLowerCase();
+    return name === 'robots' && content.split(/[\s,]+/).includes('noindex');
+  });
+}
+
 /**
- * Detect if HTML content contains noindex meta tag (internal helper).
+ * Detect if HTML content contains noindex meta tag using the HTML5 parser (internal helper).
  * @param {string} htmlContent - Raw HTML content
  * @returns {boolean} True if noindex is present
  */
 function detectNoindex(htmlContent) {
-  // Match <meta name="robots" content="...noindex...">
-  // Case-insensitive matching
-  // Support multiple values in content (e.g., "noindex, nofollow")
-  const metaRobotsRegex = /<meta\s+[^>]*name\s*=\s*["']robots["'][^>]*>/gi;
-  const matches = htmlContent.match(metaRobotsRegex) || [];
-  
-  for (const metaTag of matches) {
-    const contentMatch = metaTag.match(/content\s*=\s*["']([^"']*)["']/i);
-    if (contentMatch) {
-      const content = contentMatch[1].toLowerCase();
-      if (content.includes('noindex')) {
-        return true;
-      }
-    }
-  }
-  
-  return false;
+  const documentAst = parse(String(htmlContent || ''));
+  return hasNoindexMeta(findNodesByTagName(documentAst, 'meta'));
 }
 
 /**
@@ -412,15 +591,29 @@ function detectNoindex(htmlContent) {
  * @returns {boolean} True if matches
  */
 export function matchGlob(pattern, str) {
-  // Escape special regex characters except * and /
-  const regexPattern = pattern
-    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '___DOUBLESTAR___')
-    .replace(/\*/g, '[^/]*')
-    .replace(/___DOUBLESTAR___/g, '.*');
-  
-  const regex = new RegExp(`^${regexPattern}$`);
-  return regex.test(str);
+  if (typeof pattern !== 'string' || typeof str !== 'string') {
+    return false;
+  }
+
+  let regexSource = '^';
+  for (let index = 0; index < pattern.length; ) {
+    if (pattern.startsWith('**/', index)) {
+      regexSource += '(?:.*/)?';
+      index += 3;
+    } else if (pattern.startsWith('**', index)) {
+      regexSource += '.*';
+      index += 2;
+    } else if (pattern[index] === '*') {
+      regexSource += '[^/]*';
+      index += 1;
+    } else {
+      regexSource += pattern[index].replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+      index += 1;
+    }
+  }
+  regexSource += '$';
+
+  return new RegExp(regexSource).test(str);
 }
 
 /**
@@ -432,8 +625,11 @@ export function matchGlob(pattern, str) {
  * @param {string} options.distDir - Output directory
  * @returns {{included: string[], excluded: string[], excludedDetails: Array<{filePath: string, reason: string}>}}
  */
-export function classifyHtmlFiles(htmlFiles, options) {
+export function classifyHtmlFiles(htmlFiles, options = {}) {
   const { excludePatterns = DEFAULT_EXCLUDE_PATTERNS, distDir } = options;
+  const normalizedPatterns = Array.isArray(excludePatterns)
+    ? excludePatterns.filter((pattern) => typeof pattern === 'string' && pattern.length > 0)
+    : DEFAULT_EXCLUDE_PATTERNS;
   const included = [];
   const excluded = [];
 
@@ -450,8 +646,8 @@ export function classifyHtmlFiles(htmlFiles, options) {
     }
     
     // Check custom exclude patterns
-    if (!shouldExclude && excludePatterns && excludePatterns.length > 0) {
-      for (const pattern of excludePatterns) {
+    if (!shouldExclude && normalizedPatterns.length > 0) {
+      for (const pattern of normalizedPatterns) {
         if (matchGlob(pattern, relativePath) || matchGlob(pattern, fileName)) {
           shouldExclude = true;
           excludeReason = `matches pattern: ${pattern}`;
@@ -529,7 +725,15 @@ export function normalizeRouteBasePath(value, context = {}) {
     return '';
   }
 
-  const raw = String(value).trim();
+  if (typeof value !== 'string') {
+    throw new Error(`${source} must be a string URL path such as "/docs/".`);
+  }
+
+  if (/[\u0000-\u001f\u007f]/.test(value) || value.includes('\\')) {
+    throw new Error(`Invalid ${source}: "${value.trim()}". Use a URL path such as "/docs/".`);
+  }
+
+  const raw = value.trim();
   if (raw === '' || raw === './') {
     return '';
   }
@@ -545,13 +749,28 @@ export function normalizeRouteBasePath(value, context = {}) {
   }
 
   const pathOnly = raw.split(/[?#]/, 1)[0];
-  if (!pathOnly || pathOnly.includes('\\') || /[\u0000-\u001f\u007f]/.test(pathOnly)) {
+  if (!pathOnly) {
     throw new Error(`Invalid ${source}: "${raw}". Use a URL path such as "/docs/".`);
   }
 
   const segments = pathOnly.split('/').filter(Boolean);
-  if (segments.some((segment) => segment === '.' || segment === '..')) {
-    throw new Error(`Invalid ${source}: "${raw}". Path segments must not be "." or "..".`);
+  for (const segment of segments) {
+    let decodedSegment = segment;
+    try {
+      decodedSegment = decodeURIComponent(segment);
+    } catch {
+      throw new Error(`Invalid ${source}: "${raw}" contains malformed percent encoding.`);
+    }
+    if (
+      segment === '.'
+      || segment === '..'
+      || decodedSegment === '.'
+      || decodedSegment === '..'
+      || decodedSegment.includes('/')
+      || decodedSegment.includes('\\')
+    ) {
+      throw new Error(`Invalid ${source}: "${raw}". Path segments must not be "." or "..".`);
+    }
   }
 
   return segments.length > 0 ? `/${segments.join('/')}/` : '';
@@ -578,15 +797,56 @@ export function composePageUrl(siteUrl, pagePath, routeBasePath = '') {
     return siteUrl.endsWith('/') ? siteUrl.slice(0, -1) : siteUrl;
   }
 
-  return new URL(joinedPath, baseUrl).toString().replace(/\/$/, '');
+  const segments = joinedPath.split('/').filter((segment) => segment && segment !== '.');
+  if (segments.some((segment) => segment === '..')) {
+    throw new Error(`Invalid page path "${pagePath}": path segments must not be "..".`);
+  }
+
+  const safePath = segments
+    .map((segment) => segment.replace(/#/g, '%23').replace(/\?/g, '%3F'))
+    .join('/');
+
+  return new URL(`/${safePath}`, baseUrl).toString().replace(/\/$/, '');
 }
 
 function composePublicFileUrl(siteUrl, filePath, routeBasePath = '') {
-  if (/^[a-z][a-z\d+.-]*:/i.test(filePath)) {
-    return filePath;
+  const raw = String(filePath ?? '').trim();
+  if (!raw || /[\u0000-\u001f\u007f]/.test(raw) || raw.startsWith('//')) {
+    throw new Error(`Invalid public file URL: "${String(filePath ?? '')}".`);
   }
 
-  return composePageUrl(siteUrl, filePath, routeBasePath);
+  if (ABSOLUTE_URL_SCHEME_PATTERN.test(raw)) {
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error(`Invalid public file URL: "${raw}".`);
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error(`Invalid public file URL "${raw}": must use http:// or https://.`);
+    }
+    return raw;
+  }
+
+  return composePageUrl(siteUrl, raw, routeBasePath);
+}
+
+function collectHtmlFilesRecursive(dirPath, htmlFiles) {
+  const entries = readdirSync(dirPath, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.vite-plugin-geo-')) {
+      continue;
+    }
+
+    const fullPath = join(dirPath, entry.name);
+
+    if (entry.isDirectory()) {
+      collectHtmlFilesRecursive(fullPath, htmlFiles);
+    } else if (entry.isFile() && /\.html$/i.test(entry.name)) {
+      htmlFiles.push(fullPath);
+    }
+  }
 }
 
 /**
@@ -600,19 +860,8 @@ export function findHtmlFiles(dirPath, htmlFiles = []) {
     return htmlFiles;
   }
 
-  const entries = readdirSync(dirPath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const fullPath = join(dirPath, entry.name);
-
-    if (entry.isDirectory()) {
-      findHtmlFiles(fullPath, htmlFiles);
-    } else if (entry.isFile() && entry.name.endsWith('.html')) {
-      htmlFiles.push(fullPath);
-    }
-  }
-
-  return htmlFiles.sort((a, b) => a.localeCompare(b));
+  collectHtmlFilesRecursive(dirPath, htmlFiles);
+  return htmlFiles.sort(compareCodeUnits);
 }
 
 /**
@@ -628,26 +877,13 @@ export function findHtmlFiles(dirPath, htmlFiles = []) {
 export function resolvePagePath(relativePath, options = {}) {
   const prettyUrls = options.prettyUrls !== false;
 
-  // Step 1: Normalize file path
-  let path = normalizeFilePath(relativePath);
+  // Step 1: Normalize file path and strip configured prefixes
+  let path = stripConfiguredPrefixes(
+    normalizeFilePath(relativePath),
+    options.stripPathPrefixes,
+  );
 
-  // Step 2: Strip configured prefixes
-  const stripPathPrefixes = (options.stripPathPrefixes || DEFAULT_STRIP_PATH_PREFIXES)
-    .map((prefix) => normalizeFilePath(prefix).replace(/\/+$/, ''))
-    .filter(Boolean);
-
-  for (const prefix of stripPathPrefixes) {
-    if (path === prefix) {
-      path = '';
-      break;
-    }
-    if (path.startsWith(`${prefix}/`)) {
-      path = path.slice(prefix.length + 1);
-      break;
-    }
-  }
-
-  // Step 3: Apply strict prettyUrls semantics while keeping homepage special-case.
+  // Step 2: Apply strict prettyUrls semantics while keeping homepage special-case.
   // - prettyUrls: true  => remove ".html" and collapse "*/index.html" to directory path
   // - prettyUrls: false => keep ".html" for non-home pages
   if (path === 'index' || path === 'index.html') {
@@ -658,7 +894,7 @@ export function resolvePagePath(relativePath, options = {}) {
     } else if (!path.endsWith('.html')) {
       path = `${path}.html`;
     }
-  } else if (path.endsWith('.html')) {
+  } else if (/\.html$/i.test(path)) {
     if (prettyUrls) {
       path = path.slice(0, -'.html'.length);
     }
@@ -668,13 +904,49 @@ export function resolvePagePath(relativePath, options = {}) {
 }
 
 function normalizeMarkdownOutput(markdownContent) {
-  return String(markdownContent || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\u00a0/g, ' ')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/^(\s*(?:-|\d+\.))\s+/gm, '$1 ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  const raw = String(markdownContent || '').replace(/\r\n/g, '\n');
+  const lines = raw.split('\n');
+  const normalizedLines = [];
+  let activeFence = null;
+  let consecutiveBlank = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    const fenceMatch = trimmed.match(/^(`{3,}|~{3,})/);
+    if (!activeFence && fenceMatch) {
+      activeFence = fenceMatch[1][0].repeat(fenceMatch[1].length);
+      consecutiveBlank = 0;
+      normalizedLines.push(line);
+      continue;
+    }
+
+    if (activeFence) {
+      normalizedLines.push(line);
+      const closePattern = new RegExp(`^\\s*${activeFence[0]}{${activeFence.length},}\\s*$`);
+      if (closePattern.test(line)) {
+        activeFence = null;
+      }
+      continue;
+    }
+
+    const cleanLine = line
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+$/, '')
+      .replace(/^(\s*(?:-|\d+\.))\s+/, '$1 ');
+
+    if (cleanLine === '') {
+      consecutiveBlank += 1;
+      if (consecutiveBlank <= 1) {
+        normalizedLines.push('');
+      }
+      continue;
+    }
+
+    consecutiveBlank = 0;
+    normalizedLines.push(cleanLine);
+  }
+
+  return normalizedLines.join('\n').trim();
 }
 
 function resolveEffectiveBaseUrl(documentAst, baseUrl) {
@@ -735,15 +1007,16 @@ function convertHtmlAstToMarkdown(documentAst, { baseUrl = '' } = {}) {
   const effectiveBaseUrl = resolveEffectiveBaseUrl(documentAst, baseUrl);
 
   const convertRootNode = (rootNode, bodyFallback) => {
-    stripBlockedNodes(rootNode, MARKDOWN_STRIP_TAGS);
+    const workingRoot = cloneAstNode(rootNode);
+    stripBlockedNodes(workingRoot, MARKDOWN_STRIP_TAGS);
     if (bodyFallback) {
-      stripBodyChromeNodes(rootNode);
+      stripBodyChromeNodes(workingRoot);
     }
     if (effectiveBaseUrl) {
-      rewriteImageSources(rootNode, effectiveBaseUrl);
+      rewriteImageSources(workingRoot, effectiveBaseUrl);
     }
 
-    const cleanedHtml = (serialize(rootNode) || '').trim();
+    const cleanedHtml = (serialize(workingRoot) || '').trim();
     if (!cleanedHtml) {
       return '';
     }
@@ -838,7 +1111,7 @@ export function composeMarkdownMirrorContent({ title, description, markdown } = 
   return parts.join('\n\n');
 }
 
-export function analyzeHtmlPage(htmlContent, { audit = false, baseUrl = '' } = {}) {
+export function analyzeHtmlPage(htmlContent, { audit = false, baseUrl = '', skipMarkdown = false } = {}) {
   const source = String(htmlContent || '');
   const documentAst = parse(source);
   const titleNode = findFirstNodeByTagName(documentAst, 'title');
@@ -848,11 +1121,7 @@ export function analyzeHtmlPage(htmlContent, { audit = false, baseUrl = '' } = {
   const descriptionNode = metaNodes.find(
     (node) => getAttribute(node, 'name').toLowerCase() === 'description',
   );
-  const noindex = metaNodes.some((node) => {
-    const name = getAttribute(node, 'name').toLowerCase();
-    const content = getAttribute(node, 'content').toLowerCase();
-    return name === 'robots' && content.split(/[\s,]+/).includes('noindex');
-  });
+  const noindex = hasNoindexMeta(metaNodes);
   // Declared alternates are cheap to collect here and drive per-page hreflang
   // in the sitemap when `hreflangFromHtml` is enabled.
   const hreflang = [];
@@ -864,14 +1133,17 @@ export function analyzeHtmlPage(htmlContent, { audit = false, baseUrl = '' } = {
     hreflang.push({ hreflang: languageTag, href });
   }
 
+  const documentBaseUrl = baseUrl ? resolveEffectiveBaseUrl(documentAst, baseUrl) : '';
+
   return {
     title: getNodeText(titleNode).trim(),
     description: getAttribute(descriptionNode, 'content').trim(),
     lang: getAttribute(htmlNode, 'lang').trim(),
     noindex,
     hreflang,
+    documentBaseUrl,
     ...(audit ? { audit: collectAuditFacts(documentAst) } : {}),
-    markdown: convertHtmlAstToMarkdown(documentAst, { baseUrl }),
+    markdown: skipMarkdown ? '' : convertHtmlAstToMarkdown(documentAst, { baseUrl }),
   };
 }
 
@@ -903,10 +1175,12 @@ function normalizeComparableUrl(value) {
  * Resolve the first valid Markdown alternate declared by an HTML page.
  * @param {string} htmlContent - Raw HTML source
  * @param {string} pageUrl - Absolute public page URL
+ * @param {{documentBaseUrl?: string}} [options={}] - Optional base URL override
  * @returns {string|null} Absolute Markdown URL
  */
-export function resolveMarkdownAlternateUrl(htmlContent, pageUrl) {
+export function resolveMarkdownAlternateUrl(htmlContent, pageUrl, { documentBaseUrl } = {}) {
   const documentAst = parse(String(htmlContent || ''));
+  const linkBaseUrl = resolveEffectiveBaseUrl(documentAst, documentBaseUrl || pageUrl);
   const links = findNodesByTagName(documentAst, 'link');
 
   for (const link of links) {
@@ -915,7 +1189,7 @@ export function resolveMarkdownAlternateUrl(htmlContent, pageUrl) {
     if (!relTokens.includes('alternate') || type !== 'text/markdown') {
       continue;
     }
-    const resolved = resolveHttpUrl(getAttribute(link, 'href'), pageUrl);
+    const resolved = resolveHttpUrl(getAttribute(link, 'href'), linkBaseUrl);
     if (resolved) {
       return resolved;
     }
@@ -967,6 +1241,27 @@ export function resolveMarkdownResourceBaseUrl(relativePath, siteUrl, options = 
   return fileUrl;
 }
 
+function findRealHeadEndOffset(source, documentAst) {
+  const headEnd = findFirstNodeByTagName(documentAst, 'head')?.sourceCodeLocation?.endTag?.startOffset;
+  if (typeof headEnd === 'number') {
+    return { offset: headEnd, fromAst: true };
+  }
+
+  if (!/<\/head\b/i.test(source)) {
+    return { offset: -1, fromAst: false };
+  }
+
+  const tokenPattern = /<!--[\s\S]*?-->|<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>|<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>|(<\/head\b[^>]*>)/gi;
+  let match;
+  while ((match = tokenPattern.exec(source)) !== null) {
+    if (match[1]) {
+      return { offset: match.index, fromAst: false };
+    }
+  }
+
+  return { offset: -1, fromAst: false };
+}
+
 /**
  * Add llms.txt v2 discovery links without replacing unrelated page metadata.
  * @param {string} htmlContent - Raw HTML source
@@ -974,29 +1269,62 @@ export function resolveMarkdownResourceBaseUrl(relativePath, siteUrl, options = 
  * @param {string|null} links.markdownUrl - Absolute Markdown alternate URL
  * @param {string} links.llmsUrl - Absolute scoped llms.txt URL
  * @param {string} links.pageUrl - Absolute public page URL
+ * @param {string} [links.documentBaseUrl] - Document URL base for relative link resolution
  * @returns {string} Updated HTML source
  */
-export function injectLlmsDiscoveryLinks(htmlContent, { markdownUrl, llmsUrl, pageUrl, onInspect, inspectionFacts }) {
+export function injectLlmsDiscoveryLinks(htmlContent, {
+  markdownUrl,
+  llmsUrl,
+  pageUrl,
+  documentBaseUrl,
+  onInspect,
+  inspectionFacts,
+}) {
   const source = String(htmlContent || '');
-  const canInsert = /<\/head>/i.test(source);
-  if (!canInsert && inspectionFacts) {
+  const quickHasHeadEnd = /<\/head\b/i.test(source);
+  if (!quickHasHeadEnd && inspectionFacts) {
     onInspect?.(null, [], inspectionFacts);
     return source;
   }
-  if (!canInsert && !onInspect) return source;
+  if (!quickHasHeadEnd && !onInspect) {
+    return source;
+  }
 
-  const documentAst = parse(source, { sourceCodeLocationInfo: Boolean(onInspect) });
+  const documentAst = parse(source, { sourceCodeLocationInfo: true });
+  const astHeadEnd = findFirstNodeByTagName(documentAst, 'head')?.sourceCodeLocation?.endTag?.startOffset;
+  const regexHeadEnd = source.search(/<\/head>/i);
+  const { offset: scannedHeadEnd, fromAst } = findRealHeadEndOffset(source, documentAst);
+  // If an explicit </head> AST node exists, require the leading </head> match to align
+  // with it so comments/scripts containing literal "</head>" are never mutated into
+  // corrupted markup while keeping existing audit expectations consistent.
+  const canInsert = fromAst
+    ? astHeadEnd === regexHeadEnd
+    : scannedHeadEnd !== -1;
+  const headEndOffset = canInsert ? scannedHeadEnd : -1;
+
+  if (!canInsert) {
+    if (onInspect) {
+      if (inspectionFacts) {
+        onInspect(null, [], inspectionFacts);
+      } else {
+        onInspect(documentAst, []);
+      }
+    }
+    return source;
+  }
+
+  const linkBaseUrl = resolveEffectiveBaseUrl(documentAst, documentBaseUrl || pageUrl);
   const links = findNodesByTagName(documentAst, 'link');
   const hasMarkdownAlternate = links.some((link) => {
     const relTokens = getAttribute(link, 'rel').toLowerCase().split(/\s+/).filter(Boolean);
     if (!relTokens.includes('alternate') || getAttribute(link, 'type').toLowerCase() !== 'text/markdown') {
       return false;
     }
-    return Boolean(resolveHttpUrl(getAttribute(link, 'href'), pageUrl));
+    return Boolean(resolveHttpUrl(getAttribute(link, 'href'), linkBaseUrl));
   });
   const hasLlmsDescription = links.some((link) => {
     const relTokens = getAttribute(link, 'rel').toLowerCase().split(/\s+/).filter(Boolean);
-    const resolvedHref = resolveHttpUrl(getAttribute(link, 'href'), pageUrl);
+    const resolvedHref = resolveHttpUrl(getAttribute(link, 'href'), linkBaseUrl);
     return relTokens.includes('describedby')
       && getAttribute(link, 'type').toLowerCase() === 'text/markdown'
       && resolvedHref === llmsUrl;
@@ -1004,26 +1332,25 @@ export function injectLlmsDiscoveryLinks(htmlContent, { markdownUrl, llmsUrl, pa
 
   const additions = [];
   const addedLinks = [];
-  if (canInsert && markdownUrl && !hasMarkdownAlternate) {
+  if (markdownUrl && !hasMarkdownAlternate) {
     addedLinks.push({ rel: 'alternate', type: 'text/markdown', href: markdownUrl, hreflang: '' });
-    additions.push(`<link rel="alternate" type="text/markdown" href="${markdownUrl}" />`);
+    additions.push(`<link rel="alternate" type="text/markdown" href="${escapeHtmlAttribute(markdownUrl)}" />`);
   }
-  if (canInsert && !hasLlmsDescription) {
+  if (!hasLlmsDescription) {
     addedLinks.push({ rel: 'describedby', type: 'text/markdown', href: llmsUrl, hreflang: '' });
-    additions.push(`<link rel="describedby" type="text/markdown" href="${llmsUrl}" />`);
+    additions.push(`<link rel="describedby" type="text/markdown" href="${escapeHtmlAttribute(llmsUrl)}" />`);
   }
+
   const updated = additions.length === 0
     ? source
-    : source.replace(/<\/head>/i, `${additions.join('')}</head>`);
+    : `${source.slice(0, headEndOffset)}${additions.join('')}${source.slice(headEndOffset)}`;
+
   if (onInspect) {
-    // Literal closing tags inside comments/scripts do not create real head links.
-    const headEnd = findFirstNodeByTagName(documentAst, 'head')?.sourceCodeLocation?.endTag?.startOffset;
-    if (headEnd === undefined && additions.length > 0) {
-      // An implicit head has no source location. Inspect the changed HTML rather
-      // than guessing where its new links landed; ordinary pages reuse the AST.
+    if (!fromAst && additions.length > 0) {
+      // An implicit head has no AST endTag source location; inspect re-parsed HTML.
       onInspect(parse(updated), []);
     } else {
-      onInspect(documentAst, headEnd === source.search(/<\/head>/i) ? addedLinks : []);
+      onInspect(documentAst, addedLinks);
     }
   }
   return updated;
@@ -1053,7 +1380,7 @@ export function resolvePagePathConflicts(groups, options = {}) {
       continue;
     }
 
-    const sorted = [...entries].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    const sorted = [...entries].sort((a, b) => compareCodeUnits(a.relativePath, b.relativePath));
     const files = sorted.map((entry) => entry.relativePath);
     const route = pagePath ? `/${pagePath}` : '/';
 
@@ -1069,7 +1396,7 @@ export function resolvePagePathConflicts(groups, options = {}) {
     selected.push(chosen);
   }
 
-  selected.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  selected.sort((a, b) => compareCodeUnits(a.relativePath, b.relativePath));
   return { selected, conflicts };
 }
 
@@ -1095,7 +1422,7 @@ export function dedupeHtmlFilesByPagePath(htmlFiles, distDir, options = {}) {
   const { selected } = resolvePagePathConflicts(groups, options);
   return selected
     .map((entry) => entry.filePath)
-    .sort((a, b) => a.localeCompare(b));
+    .sort(compareCodeUnits);
 }
 
 /**
@@ -1136,9 +1463,14 @@ export function extractPageMetadata(htmlContent, options = {}) {
  * @returns {Array<{filename: string, content: string}>} Array of sitemap files
  */
 export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, options = {}) {
+  const parsedCurrentDate = new Date(currentDate);
+  if (Number.isNaN(parsedCurrentDate.getTime())) {
+    throw new Error(`Invalid build date for sitemap: "${String(currentDate)}".`);
+  }
+
   const dedupedHtmlFiles = dedupeHtmlFilesByPagePath(htmlFiles, distDir, options);
   const lastmodStrategy = options.lastmodStrategy || 'none';
-  const buildDate = currentDate.includes('T') ? currentDate : new Date(currentDate).toISOString();
+  const buildDate = String(currentDate).includes('T') ? String(currentDate) : parsedCurrentDate.toISOString();
   const prettyUrls = options.prettyUrls !== false;
   const sitemapIndex = options.sitemapIndex !== false; // Default to true
   const sitemapMaxBytes = options.sitemapMaxBytes || SITEMAP_MAX_BYTES;
@@ -1152,13 +1484,14 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
     ));
 
   const urlEntries = dedupedHtmlFiles.map((filePath) => {
-    const relativePath = normalizeFilePath(relative(distDir, filePath));
-    // Use unified resolvePagePath with prettyUrls option
-    const pagePath = resolvePagePath(relativePath, { ...options, prettyUrls });
-
-    const loc = composePageUrl(baseUrl, pagePath, options.routeBasePath);
     const pageModel = getPageModel(options, filePath);
-    const mtimeSourcePath = resolveLastmodSourcePath(filePath, distDir, options);
+    const relativePath = pageModel?.relativePath || normalizeFilePath(relative(distDir, filePath));
+    // Use unified resolvePagePath with prettyUrls option
+    const pagePath = pageModel && pageModel.pagePath !== undefined
+      ? pageModel.pagePath
+      : resolvePagePath(relativePath, { ...options, prettyUrls });
+
+    const loc = pageModel?.pageUrl || composePageUrl(baseUrl, pagePath, options.routeBasePath);
     // pageModel.mtime already contains the lastmodResolver result and the
     // configured strategy. Do not short-circuit on strategy 'none' here:
     // a resolver is allowed to provide timestamps with the default strategy.
@@ -1166,7 +1499,7 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
       ? pageModel.mtime
       : (lastmodStrategy === 'none'
         ? null
-        : extractLastmod(mtimeSourcePath || filePath, lastmodStrategy, buildDate));
+        : extractLastmod(resolveLastmodSourcePath(filePath, distDir, options) || filePath, lastmodStrategy, buildDate));
 
     // Per-page declarations win when enabled; pages without any fall back to
     // the global hreflang patterns.
@@ -1177,6 +1510,7 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
         pageModel.lang,
         loc,
         baseUrl,
+        pageModel.documentBaseUrl || pageModel.filePageUrl || loc,
       );
     } else if (hreflangConfig) {
       hreflangLinks = generateHreflangLinks(pagePath, hreflangConfig, baseUrl);
@@ -1197,7 +1531,7 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
   });
 
   const xmlnsXhtml = needsXhtmlNamespace ? ' xmlns:xhtml="http://www.w3.org/1999/xhtml"' : '';
-  const singleSitemapContent = buildSitemapXml(urlEntries, xmlnsXhtml);
+  const totalBytes = getSitemapByteLength(urlEntries, xmlnsXhtml);
 
   if (!sitemapIndex && urlEntries.length > SITEMAP_MAX_URLS) {
     throw new Error('Sitemap exceeds the 50,000 URL limit while sitemapIndex is disabled.');
@@ -1205,8 +1539,8 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
 
   // Check if we need to split the sitemap by URL count or protocol byte limit.
   if (
-    sitemapIndex &&
-    (urlEntries.length > SITEMAP_MAX_URLS || Buffer.byteLength(singleSitemapContent, 'utf-8') > sitemapMaxBytes)
+    sitemapIndex
+    && (urlEntries.length > SITEMAP_MAX_URLS || totalBytes > sitemapMaxBytes)
   ) {
     const sitemapFiles = splitSitemap(urlEntries, {
       maxUrlsPerFile: SITEMAP_MAX_URLS,
@@ -1218,26 +1552,51 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
       return sitemapFiles;
     }
 
+    if (sitemapFiles.length > SITEMAP_MAX_URLS) {
+      throw new Error('Sitemap index exceeds the 50,000 sitemap file limit.');
+    }
+
     // Generate sitemap index
     const sitemapIndexContent = generateSitemapIndex(
-      sitemapFiles.map(f => f.filename),
+      sitemapFiles.map((f) => f.filename),
       baseUrl,
       lastmodStrategy === 'none' ? null : buildDate,
       options.routeBasePath,
     );
 
+    if (Buffer.byteLength(sitemapIndexContent, 'utf-8') > SITEMAP_MAX_BYTES) {
+      throw new Error('Sitemap index exceeds the 50 MiB protocol byte limit.');
+    }
+
     return [
       ...sitemapFiles,
-      { filename: 'sitemap_index.xml', content: sitemapIndexContent }
+      { filename: 'sitemap_index.xml', content: sitemapIndexContent },
     ];
   }
 
-  if (Buffer.byteLength(singleSitemapContent, 'utf-8') > sitemapMaxBytes) {
+  if (totalBytes > sitemapMaxBytes) {
     throw new Error('Sitemap exceeds the configured byte limit while sitemapIndex is disabled.');
   }
 
   // Single sitemap file
-  return [{ filename: 'sitemap.xml', content: singleSitemapContent }];
+  return [{ filename: 'sitemap.xml', content: buildSitemapXml(urlEntries, xmlnsXhtml) }];
+}
+
+function getSitemapWrapperBytes(xmlnsXhtml = '') {
+  const header = `<?xml version="1.0" encoding="UTF-8"?>\n<!-- Generated by vite-plugin-geo -->\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"${xmlnsXhtml}>\n`;
+  const footer = '\n</urlset>';
+  return Buffer.byteLength(header, 'utf-8') + Buffer.byteLength(footer, 'utf-8');
+}
+
+function getSitemapByteLength(urlEntries, xmlnsXhtml = '') {
+  let totalBytes = getSitemapWrapperBytes(xmlnsXhtml);
+  for (let index = 0; index < urlEntries.length; index += 1) {
+    if (index > 0) {
+      totalBytes += 1; // '\n' separator
+    }
+    totalBytes += Buffer.byteLength(urlEntries[index], 'utf-8');
+  }
+  return totalBytes;
 }
 
 function buildSitemapXml(urlEntries, xmlnsXhtml = '') {
@@ -1261,42 +1620,32 @@ function splitSitemap(urlEntries, options = {}) {
   const maxUrlsPerFile = options.maxUrlsPerFile || SITEMAP_MAX_URLS;
   const maxBytesPerFile = options.maxBytesPerFile || SITEMAP_MAX_BYTES;
   const xmlnsXhtml = options.xmlnsXhtml || '';
+  const wrapperBytes = getSitemapWrapperBytes(xmlnsXhtml);
 
-  // If within limit, return single sitemap
-  const singleContent = buildSitemapXml(urlEntries, xmlnsXhtml);
-  if (
-    urlEntries.length <= maxUrlsPerFile &&
-    Buffer.byteLength(singleContent, 'utf-8') <= maxBytesPerFile
-  ) {
-    return [{ filename: 'sitemap.xml', content: singleContent }];
-  }
-
-  // Split into multiple sitemaps
   const chunks = [];
   let currentChunk = [];
+  let currentBytes = wrapperBytes;
 
-  urlEntries.forEach((entry) => {
-    const nextChunk = [...currentChunk, entry];
-    const nextContent = buildSitemapXml(nextChunk, xmlnsXhtml);
-    const exceedsUrlLimit = nextChunk.length > maxUrlsPerFile;
-    const exceedsByteLimit = Buffer.byteLength(nextContent, 'utf-8') > maxBytesPerFile;
-
-    if (currentChunk.length > 0 && (exceedsUrlLimit || exceedsByteLimit)) {
-      chunks.push(currentChunk);
-      const singleEntryContent = buildSitemapXml([entry], xmlnsXhtml);
-      if (Buffer.byteLength(singleEntryContent, 'utf-8') > maxBytesPerFile) {
-        throw new Error('A single sitemap entry exceeds the configured byte limit.');
-      }
-      currentChunk = [entry];
-      return;
-    }
-
-    if (currentChunk.length === 0 && exceedsByteLimit) {
+  for (const entry of urlEntries) {
+    const entryBytes = Buffer.byteLength(entry, 'utf-8');
+    if (wrapperBytes + entryBytes > maxBytesPerFile) {
       throw new Error('A single sitemap entry exceeds the configured byte limit.');
     }
 
-    currentChunk = nextChunk;
-  });
+    const addedBytes = currentChunk.length === 0 ? entryBytes : 1 + entryBytes;
+    const exceedsUrlLimit = currentChunk.length + 1 > maxUrlsPerFile;
+    const exceedsByteLimit = currentBytes + addedBytes > maxBytesPerFile;
+
+    if (currentChunk.length > 0 && (exceedsUrlLimit || exceedsByteLimit)) {
+      chunks.push(currentChunk);
+      currentChunk = [entry];
+      currentBytes = wrapperBytes + entryBytes;
+      continue;
+    }
+
+    currentChunk.push(entry);
+    currentBytes += addedBytes;
+  }
 
   if (currentChunk.length > 0) {
     chunks.push(currentChunk);
@@ -1338,15 +1687,19 @@ ${sitemapEntries.join('\n')}
  * Declarations are authoritative; a self entry is synthesized from
  * `<html lang>` when missing, and x-default is never invented.
  */
-function generateHreflangLinksFromHtml(declared, lang, pageUrl, baseUrl) {
+function generateHreflangLinksFromHtml(declared, lang, pageUrl, baseUrl, documentBaseUrl = '') {
   const links = new Map();
+  const relativeBaseUrl = documentBaseUrl || pageUrl || baseUrl;
 
   for (const entry of declared) {
     const languageTag = String(entry?.hreflang || '').trim();
     if (!languageTag || !isValidLanguageTag(languageTag, { allowXDefault: true })) continue;
-    const href = resolveHttpUrl(entry?.href, pageUrl || baseUrl);
+    const href = resolveHttpUrl(entry?.href, relativeBaseUrl);
     if (!href) continue;
-    links.set(`${languageTag}\0${href}`, { hreflang: languageTag, href });
+    const normalizedKey = languageTag.toLowerCase();
+    if (!links.has(normalizedKey)) {
+      links.set(normalizedKey, { hreflang: languageTag, href });
+    }
   }
 
   const normalizedLang = String(lang || '').trim();
@@ -1360,13 +1713,15 @@ function generateHreflangLinksFromHtml(declared, lang, pageUrl, baseUrl) {
       hreflang.toLowerCase() !== 'x-default'
       && normalizeComparableUrl(href) === comparableSelfUrl
     ));
-    if (!hasSelf) {
-      links.set(`${normalizedLang}\0${selfUrl}`, { hreflang: normalizedLang, href: selfUrl });
+    const selfKey = normalizedLang.toLowerCase();
+    if (!hasSelf && !links.has(selfKey)) {
+      links.set(selfKey, { hreflang: normalizedLang, href: selfUrl });
     }
   }
 
   return [...links.values()]
-    .sort((a, b) => a.hreflang.localeCompare(b.hreflang) || a.href.localeCompare(b.href))
+    .sort((a, b) => compareCodeUnits(a.hreflang.toLowerCase(), b.hreflang.toLowerCase())
+      || compareCodeUnits(a.href, b.href))
     .map(({ hreflang, href }) => (
       `    <xhtml:link rel="alternate" hreflang="${escapeXml(hreflang)}" href="${escapeXml(href)}"/>`
     ));
@@ -1392,16 +1747,21 @@ function generateHreflangLinks(pagePath, hreflangConfig, baseUrl) {
       continue;
     }
 
-    // Generate URL by replacing {path} placeholder
-    let url;
-    if (urlPattern.includes('{path}')) {
-      url = urlPattern.replace('{path}', pagePath);
-    } else {
-      url = urlPattern;
+    if (typeof urlPattern !== 'string' || !urlPattern.trim()) {
+      continue;
     }
 
-    // Ensure URL is absolute
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    // Generate URL by replacing {path} placeholder
+    let url = urlPattern.includes('{path}')
+      ? urlPattern.replaceAll('{path}', pagePath)
+      : urlPattern;
+
+    // Ensure URL is absolute http(s)
+    if (!/^https?:\/\//i.test(url)) {
+      if (ABSOLUTE_URL_SCHEME_PATTERN.test(url) || url.startsWith('//')) {
+        console.warn(`⚠️  Invalid hreflang URL pattern for "${langCode}": ${url}, skipping`);
+        continue;
+      }
       url = `${baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl}/${url.replace(/^\//, '')}`;
     }
 
@@ -1432,14 +1792,17 @@ export function generateHumansTxt(packageJson, buildDate, helpers = {}) {
 
   if (teamInfo.author) {
     const authorLines = [];
-    if (teamInfo.author.name) {
-      authorLines.push(`  Developer: ${teamInfo.author.name}`);
+    const authorName = sanitizeControlChars(teamInfo.author.name).trim();
+    const authorEmail = sanitizeControlChars(teamInfo.author.email).trim();
+    const authorUrl = sanitizeControlChars(teamInfo.author.url).trim();
+    if (authorName) {
+      authorLines.push(`  Developer: ${authorName}`);
     }
-    if (teamInfo.author.email) {
-      authorLines.push(`  Contact: ${teamInfo.author.email}`);
+    if (authorEmail) {
+      authorLines.push(`  Contact: ${authorEmail}`);
     }
-    if (teamInfo.author.url) {
-      authorLines.push(`  From: ${teamInfo.author.url}`);
+    if (authorUrl) {
+      authorLines.push(`  From: ${authorUrl}`);
     }
     if (authorLines.length > 0) {
       lines.push('/* TEAM */', ...authorLines, '');
@@ -1447,7 +1810,7 @@ export function generateHumansTxt(packageJson, buildDate, helpers = {}) {
   }
 
   const contributorNames = (teamInfo.contributors || [])
-    .map((contributor) => contributor.name)
+    .map((contributor) => sanitizeControlChars(contributor?.name).trim())
     .filter(Boolean);
   if (contributorNames.length > 0) {
     lines.push('/* THANKS */');
@@ -1457,11 +1820,17 @@ export function generateHumansTxt(packageJson, buildDate, helpers = {}) {
 
   lines.push('/* SITE */');
   const date = new Date(buildDate);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid buildDate for humans.txt: "${String(buildDate)}".`);
+  }
   const formattedDate = date.toISOString().split('T')[0];
   lines.push(`  Last update: ${formattedDate}`);
 
-  if (techStack.length > 0) {
-    lines.push(`  Components: ${techStack.join(', ')}`);
+  const cleanTechStack = (techStack || [])
+    .map((tech) => sanitizeControlChars(tech).trim())
+    .filter(Boolean);
+  if (cleanTechStack.length > 0) {
+    lines.push(`  Components: ${cleanTechStack.join(', ')}`);
   }
 
   return `${lines.join('\n')}\n`;
@@ -1473,6 +1842,9 @@ export function generateHumansTxt(packageJson, buildDate, helpers = {}) {
  */
 function toRFC822Date(isoDate) {
   const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid date for RSS feed: "${String(isoDate)}".`);
+  }
 
   // RFC 822 format: "Day, DD Mon YYYY HH:MM:SS GMT"
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1508,39 +1880,59 @@ export function detectFeedFormat(feedContent) {
 }
 
 export function injectFeedLink(htmlContent, feedHref) {
-  const newFeedLink = `<link rel="alternate" type="application/rss+xml" title="RSS Feed" href="${String(feedHref)}" />`;
-  const linkPattern = /<link\b[^>]*>/gi;
-  let replaced = false;
-  const updatedHtml = String(htmlContent).replace(linkPattern, (linkTag) => {
-    const rel = linkTag.match(/\brel\s*=\s*(["'])(.*?)\1/i)?.[2]?.toLowerCase() || '';
-    const type = linkTag.match(/\btype\s*=\s*(["'])(.*?)\1/i)?.[2]?.toLowerCase() || '';
-    const title = linkTag.match(/\btitle\s*=\s*(["'])(.*?)\1/i)?.[2]?.toLowerCase() || '';
-    const isFeedLink = rel.split(/\s+/).includes('alternate')
+  const source = String(htmlContent ?? '');
+  const newFeedLink = `<link rel="alternate" type="application/rss+xml" title="RSS Feed" href="${escapeHtmlAttribute(feedHref)}" />`;
+  const documentAst = parse(source, { sourceCodeLocationInfo: true });
+  const headNode = findFirstNodeByTagName(documentAst, 'head');
+  const linkNodes = findNodesByTagName(headNode || documentAst, 'link');
+
+  const feedLinks = linkNodes.filter((link) => {
+    const rel = getAttribute(link, 'rel').toLowerCase();
+    const type = getAttribute(link, 'type').toLowerCase();
+    const title = getAttribute(link, 'title').toLowerCase();
+    return rel.split(/\s+/).includes('alternate')
       && (
         type === 'application/rss+xml'
         || type === 'application/atom+xml'
         || title === 'rss feed'
         || title === 'atom feed'
-      );
-
-    if (!isFeedLink) {
-      return linkTag;
-    }
-
-    if (replaced) {
-      return '';
-    }
-    replaced = true;
-    return newFeedLink;
+      )
+      && typeof link.sourceCodeLocation?.startOffset === 'number'
+      && typeof link.sourceCodeLocation?.endOffset === 'number';
   });
 
-  if (replaced) {
-    return updatedHtml;
+  if (feedLinks.length > 0) {
+    const edits = feedLinks
+      .map((link, index) => ({
+        startOffset: link.sourceCodeLocation.startOffset,
+        endOffset: link.sourceCodeLocation.endOffset,
+        replacement: index === 0 ? newFeedLink : '',
+      }))
+      .sort((a, b) => a.startOffset - b.startOffset);
+
+    let cursor = 0;
+    let output = '';
+    for (const edit of edits) {
+      output += source.slice(cursor, edit.startOffset) + edit.replacement;
+      cursor = edit.endOffset;
+    }
+    return output + source.slice(cursor);
   }
 
-  return /<\/head>/i.test(updatedHtml)
-    ? updatedHtml.replace(/<\/head>/i, `${newFeedLink}</head>`)
-    : updatedHtml;
+  const { offset: headEndOffset } = findRealHeadEndOffset(source, documentAst);
+  if (headEndOffset === -1) {
+    return source;
+  }
+
+  return `${source.slice(0, headEndOffset)}${newFeedLink}${source.slice(headEndOffset)}`;
+}
+
+function parseTimestampMs(value) {
+  if (!value) {
+    return 0;
+  }
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 /**
@@ -1558,11 +1950,14 @@ export function generateFeedXml(pages, siteMetadata, buildDate) {
   const { url, title, description, lang } = siteMetadata;
   const feedUrl = siteMetadata.feedUrl || new URL('feed.xml', `${url.replace(/\/+$/, '')}/`).toString();
 
-  // Sort pages by mtime descending (newest first)
-  const sortedPages = [...pages].sort((a, b) => {
-    const dateA = a.mtime ? new Date(a.mtime).getTime() : 0;
-    const dateB = b.mtime ? new Date(b.mtime).getTime() : 0;
-    return dateB - dateA;
+  // Sort pages by mtime descending (newest first), tie-breaking deterministically by URL
+  const sortedPages = [...(Array.isArray(pages) ? pages : [])].sort((a, b) => {
+    const dateA = parseTimestampMs(a?.mtime);
+    const dateB = parseTimestampMs(b?.mtime);
+    if (dateB !== dateA) {
+      return dateB - dateA;
+    }
+    return compareCodeUnits(a?.url, b?.url);
   });
 
   const lines = [];
@@ -1578,7 +1973,7 @@ export function generateFeedXml(pages, siteMetadata, buildDate) {
   lines.push('');
 
   // Generate item elements for each page
-  sortedPages.forEach(page => {
+  sortedPages.forEach((page) => {
     lines.push('    <item>');
     lines.push(`      <title>${escapeXml(page.title)}</title>`);
     lines.push(`      <link>${escapeXml(page.url)}</link>`);
@@ -1613,19 +2008,24 @@ export function generateLlmsTxt(siteMetadata, htmlFiles, distDir, options = {}) 
   const pages = collectLlmsPages(siteMetadata, htmlFiles, distDir, options);
   const groupedPages = groupLlmsPages(pages);
 
+  const safeTitle = sanitizeControlChars(title).trim();
+  const safeDescription = sanitizeControlChars(description).trim();
+
   const lines = [];
-  lines.push(`# ${title}`);
+  lines.push(`# ${safeTitle}`);
   lines.push('');
 
-  if (description) {
-    lines.push(`> ${description}`);
+  if (safeDescription) {
+    lines.push(`> ${safeDescription}`);
     lines.push('');
   }
 
   groupedPages.forEach(({ section, pages: sectionPages }) => {
-    lines.push(`## ${section}`);
+    lines.push(`## ${sanitizeControlChars(section).trim()}`);
     sectionPages.forEach((page) => {
-      lines.push(`- [${page.title}](${page.url}): ${truncateLlmsDescription(page.description)}`);
+      lines.push(
+        `- [${escapeMarkdownLinkLabel(page.title)}](${escapeMarkdownLinkDestination(page.url)}): ${truncateLlmsDescription(page.description)}`,
+      );
     });
     lines.push('');
   });
@@ -1633,7 +2033,9 @@ export function generateLlmsTxt(siteMetadata, htmlFiles, distDir, options = {}) 
   if (Array.isArray(options.skuMd?.catalog) && options.skuMd.catalog.length > 0) {
     lines.push('## Product Catalog');
     options.skuMd.catalog.forEach(({ label, url: catalogUrl }) => {
-      lines.push(`- [${label}](${catalogUrl}): Browse the merchant storefront catalog`);
+      lines.push(
+        `- [${escapeMarkdownLinkLabel(label)}](${escapeMarkdownLinkDestination(catalogUrl)}): Browse the merchant storefront catalog`,
+      );
     });
     lines.push('');
   }
@@ -1641,10 +2043,12 @@ export function generateLlmsTxt(siteMetadata, htmlFiles, distDir, options = {}) 
   if (options.includeOptional !== false) {
     const optionalLinks = [];
     if (options.includeSitemap !== false) {
-      optionalLinks.push(`- [Sitemap](${composePublicFileUrl(url, options.sitemapUrl || 'sitemap.xml', options.routeBasePath)}): Complete list of all indexed pages`);
+      const sitemapHref = composePublicFileUrl(url, options.sitemapUrl || 'sitemap.xml', options.routeBasePath);
+      optionalLinks.push(`- [Sitemap](${escapeMarkdownLinkDestination(sitemapHref)}): Complete list of all indexed pages`);
     }
     if (options.includeRobots ?? (options.generateRobots !== false)) {
-      optionalLinks.push(`- [robots.txt](${composePageUrl(url, 'robots.txt')}): Search engine crawling instructions`);
+      const robotsHref = composePageUrl(url, 'robots.txt');
+      optionalLinks.push(`- [robots.txt](${escapeMarkdownLinkDestination(robotsHref)}): Search engine crawling instructions`);
     }
     if (optionalLinks.length > 0) {
       lines.push('## Optional', ...optionalLinks);
@@ -1661,10 +2065,12 @@ function collectLlmsPages(siteMetadata, htmlFiles, distDir, options = {}) {
   const dedupedHtmlFiles = dedupeHtmlFilesByPagePath(htmlFiles, distDir, options);
 
   return dedupedHtmlFiles.map((filePath) => {
-    const relativePath = normalizeFilePath(relative(distDir, filePath));
     const pageModel = getPageModel(options, filePath);
+    const relativePath = pageModel?.relativePath || normalizeFilePath(relative(distDir, filePath));
     const metadata = pageModel || extractPageMetadata(readFileSync(filePath, 'utf-8'));
-    const pagePath = resolvePagePath(relativePath, { ...options, prettyUrls });
+    const pagePath = pageModel && pageModel.pagePath !== undefined
+      ? pageModel.pagePath
+      : resolvePagePath(relativePath, { ...options, prettyUrls });
     const pageUrl = pageModel?.markdownUrl || (
       llmsMdMirror
         ? composePageUrl(
@@ -1672,7 +2078,7 @@ function collectLlmsPages(siteMetadata, htmlFiles, distDir, options = {}) {
           resolveMarkdownMirrorPath(pagePath, options.llmsMdMirrorStyle),
           options.routeBasePath,
         )
-        : composePageUrl(url, pagePath, options.routeBasePath)
+        : (pageModel?.pageUrl || composePageUrl(url, pagePath, options.routeBasePath))
     );
     const page = {
       filePath,
@@ -1691,15 +2097,18 @@ function collectLlmsPages(siteMetadata, htmlFiles, distDir, options = {}) {
   }).sort((a, b) => {
     if (a.isHome && !b.isHome) return -1;
     if (!a.isHome && b.isHome) return 1;
-    return a.url.localeCompare(b.url);
+    return compareCodeUnits(a.url, b.url);
   });
 }
 
 function resolveLlmsSection(page, options = {}) {
   if (typeof options.llmsClassify === 'function') {
     const section = options.llmsClassify(page);
-    if (typeof section === 'string' && section.trim()) {
-      return section.trim();
+    if (typeof section === 'string') {
+      const sanitized = sanitizeControlChars(section).trim();
+      if (sanitized) {
+        return sanitized;
+      }
     }
   }
 
@@ -1707,7 +2116,7 @@ function resolveLlmsSection(page, options = {}) {
     for (const [section, patterns] of Object.entries(options.llmsSections)) {
       const patternList = Array.isArray(patterns) ? patterns : [patterns];
       if (patternList.some((pattern) => pattern && page.relativePath.includes(String(pattern)))) {
-        return section;
+        return sanitizeControlChars(section).trim() || 'Docs';
       }
     }
   }
@@ -1734,7 +2143,7 @@ function groupLlmsPages(pages) {
 
   const sections = [
     ...preferredOrder.filter((section) => sectionMap.has(section)),
-    ...Array.from(sectionMap.keys()).filter((section) => !preferredOrder.includes(section)).sort(),
+    ...Array.from(sectionMap.keys()).filter((section) => !preferredOrder.includes(section)).sort(compareCodeUnits),
   ];
 
   return sections.map((section) => ({
@@ -1744,11 +2153,12 @@ function groupLlmsPages(pages) {
 }
 
 function truncateLlmsDescription(description) {
-  const normalizedDescription = String(description || '').replace(/\s+/g, ' ').trim();
-  if (normalizedDescription.length <= 80) {
+  const normalizedDescription = sanitizeControlChars(description).replace(/\s+/g, ' ').trim();
+  const codePoints = Array.from(normalizedDescription);
+  if (codePoints.length <= 80) {
     return normalizedDescription;
   }
-  return `${normalizedDescription.substring(0, 77)}...`;
+  return `${codePoints.slice(0, 77).join('')}...`;
 }
 
 /**
@@ -1761,7 +2171,12 @@ function truncateLlmsDescription(description) {
  * @returns {string} robots.txt
  */
 export function generateRobotsTxt(baseUrl, options = {}) {
-  const robotsDirectives = options.robotsDirectives || [];
+  const rawDirectives = options.robotsDirectives;
+  if (rawDirectives !== undefined && !Array.isArray(rawDirectives)) {
+    throw new Error('robotsDirectives must be an array of non-empty strings.');
+  }
+
+  const robotsDirectives = rawDirectives || [];
   robotsDirectives.forEach((directive) => {
     if (/[\u0000-\u001F\u007F]/.test(String(directive))) {
       throw new Error('robotsDirectives must not contain control characters.');

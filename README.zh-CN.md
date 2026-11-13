@@ -7,7 +7,7 @@
 
 [English](./README.md) | 简体中文
 
-面向 Vite 与 Astro 静态站点的构建后发现文件生成与校验工具。基于统一的构建规划管线，自动生成 `sitemap.xml`、`robots.txt`、RSS 2.0 `feed.xml`、`llms.txt` v2、页面级纯净 Markdown 镜像，以及可选的 `humans.txt` 与 `sku.md` 根清单。
+面向 Vite、[Vite+](https://viteplus.dev/) 与 Astro 静态站点的构建后发现文件生成与校验工具。基于统一的构建规划管线，自动生成 `sitemap.xml`、`robots.txt`、RSS 2.0 `feed.xml`、`llms.txt` v2、页面级纯净 Markdown 镜像，以及可选的 `humans.txt` 与 `sku.md` 根清单。
 
 > **能力边界声明：** 本工具生成的产物仅作为机器可读的发现与抓取提示，不保证任何搜索引擎或 AI 系统抓取、索引、引用或优先展示页面，也不承诺搜索排名与流量效果。
 
@@ -18,6 +18,7 @@
 - [安装](#安装)
 - [快速开始](#快速开始)
   - [Vite 项目](#vite-项目)
+  - [Vite+ 项目](#vite-项目-1)
   - [Astro 项目](#astro-项目)
 - [输出文件与冲突策略](#输出文件与冲突策略)
 - [配置项](#配置项)
@@ -39,12 +40,13 @@
 - **多语言 `hreflang` 支持：** 支持全局路径模板映射，或通过 `hreflangFromHtml` 逐页解析 HTML 声明生成 Sitemap `xhtml:link`。
 - **可选 `humans.txt` 与 `sku.md`（`1.0.0-beta`）：** 仅输出可验证的真实元数据与根目录纯 Markdown 商品目录入口，不编造缺失字段。
 - **静态构建诊断与只读 `verify`：** 构建期默认输出静态页面诊断建议（`audit`），构建后可通过 `vite-plugin-geo verify` 只读校验最终 `dist/` 产物，支持导出 JSON（`schemaVersion: "1.0"`）与 SARIF 2.1.0 报告。
-- **三端一致管线：** Vite 插件、Astro 集成与独立 CLI 共用同一套参数校验、冲突处理、路径规划与所有权识别逻辑。
+- **多端一致管线：** Vite / Vite+ 插件、Astro 集成与独立 CLI 共用同一套参数校验、冲突处理、路径规划与所有权识别逻辑。
 
 ## 环境要求
 
-- **Node.js：** `^20.19.0 || >=22.12.0`
-- **Vite：** `^7.0.0 || ^8.0.0`
+- **Node.js：** `^20.19.0 || >=22.12.0`（`vite-plus` 本身要求 `^22.18.0 || ^24.11.0 || >=26.0.0`）
+- **Vite：** `^7.0.0 || ^8.0.0`（可选 Vite peer 依赖，纯 CLI 或仅 Astro 项目无需单独安装 Vite）
+- **Vite+：** `vite-plus` `^1.x`（通过 `@voidzero-dev/vite-plus-core` 内置 Vite 8 与 Rolldown）
 - **Astro：** `^7.0.0`（可选 Astro peer 依赖，纯 Vite 项目无需安装 Astro）
 
 ## 安装
@@ -63,6 +65,12 @@ yarn add -D vite-plugin-geo
 
 ```bash
 bun add -d vite-plugin-geo
+```
+
+在 Vite+ 工作区中安装：
+
+```bash
+vp add -D vite-plugin-geo
 ```
 
 ## 快速开始
@@ -95,6 +103,37 @@ export default defineConfig({
 import geo, { createGeoGeneratorPlugin, verifyGeoOutput } from 'vite-plugin-geo';
 ```
 
+Vite 构建说明：
+
+- `distDir` 默认读取 Vite 解析后的 `build.outDir`，`routeBasePath` 默认读取 Vite `base`。
+- 插件声明 `apply: 'build'` 并在 `generateBundle`（`enforce: 'post'`）通过 `this.emitFile` 写入产物，支持 `build.write: false`；当插件产物与 `publicDir` 文件重名时由插件输出覆盖，同时对无所有权标记的既有文件遵循 `fileConflict`、`sitemapConflict` 与 `generateRobots`。
+- SSR、库模式及多环境构建中的服务端环境不产出静态 HTML，会自动跳过生成；多环境构建仅基于客户端 HTML 输出生成发现文件。
+
+### Vite+ 项目
+
+[Vite+](https://viteplus.dev/)（`vite-plus`）通过 `@voidzero-dev/vite-plus-core` 内置 Vite 8 与 Rolldown，因此在 `vite.config.ts` 中直接注册默认导出即可，无需额外的适配器子路径入口：
+
+```ts
+// vite.config.ts
+import { defineConfig, lazyPlugins } from 'vite-plus';
+import geo from 'vite-plugin-geo';
+
+export default defineConfig({
+  plugins: lazyPlugins(() => [
+    geo({
+      domain: 'https://example.com',
+    }),
+  ]),
+});
+```
+
+Vite+ 使用说明：
+
+- 建议使用 `'vite-plus'` 的 `lazyPlugins(() => [...])` 包裹插件数组，避免 `vp check`、`vp lint` 与 `vp fmt` 在读取配置元数据阶段（`VP_RESOLVING_CONFIG_METADATA=1`）提前初始化插件。
+- 构建 Web 应用请使用 `vp build`（执行 Vite + Rolldown 构建管线）；`vp pack` 基于 `tsdown` 用于打包库或独立可执行文件，不会生成 HTML 页面。
+- 由于 `vite-plus` 将 `vite` 映射为 `@voidzero-dev/vite-plus-core@1.x` 而非 `vite@7`/`8`，请保留 `vp create` 或 `vp migrate` 生成的 `overrides`（`npm` / `pnpm`）与 `pnpm.peerDependencyRules`。
+- 若 Vite+ 项目的 `package.json` 仅声明 `vite-plus`（无直接 `vite` 依赖），开启 `generateHumans: true` 时会在 `humans.txt` 的 `Components:` 中写入 `vite-plus`。
+
 ### Astro 项目
 
 Astro 在内部 Vite 构建结束后才落盘最终 HTML，请勿将本插件放入 `vite.plugins`。请在以下两种正式方式中二选一（不要同时启用）。
@@ -114,6 +153,12 @@ export default defineConfig({
 
 域名读取优先级依次为 `geo({ domain })`、Astro `site`、`package.json.domain`。已配置 `site` 时无需重复填写 `domain`。
 
+Astro 集成说明：
+
+- 未显式传入 `prettyUrls` 且 Astro `build.format` 为 `'file'` 时，`vite-plugin-geo/astro` 会自动关闭 `prettyUrls` 以匹配 `.html` 输出路径。
+- 手动配置 `canonical` 或 `sitemapUrl` 时请与 Astro 的 `trailingSlash` 策略保持一致。
+- Astro 声明的重定向路由（`route.type === 'redirect'`）及对应跳转页面会自动排除出 `sitemap.xml`、`llms.txt`、`feed.xml`、Markdown 镜像与构建审计。
+
 #### 方式二：构建后串联 CLI
 
 ```json
@@ -125,7 +170,7 @@ export default defineConfig({
 }
 ```
 
-CLI 默认扫描 `dist/` 且不解析 `astro.config.*`。若域名仅写在 Astro `site` 中，请传入 `--domain https://example.com`（自定义输出目录使用 `--dist-dir <path>`）。
+CLI 默认扫描 `dist/` 且不解析 `astro.config.*`。若域名仅写在 Astro `site` 中，请传入 `--domain https://example.com`（自定义输出目录或 Astro `outDir` 请同时传入 `--dist-dir <path>`）。
 
 默认输出结构：
 
@@ -206,7 +251,7 @@ dist/
 
 ## Astro 官方 Sitemap 兼容
 
-若 Astro 项目已使用 `@astrojs/sitemap`，请将 `sitemap()` 放在 `geo()` 之前：
+若 Astro 项目已使用 `@astrojs/sitemap`，请将 `sitemap()` 放在 `geo()` 之前，确保 `@astrojs/sitemap` 先写出 Sitemap 文件，随后 `vite-plugin-geo/astro` 在 `astro:build:done` 扫描 `dist/`（若顺序相反，`astro:config:done` 会输出顺序告警）：
 
 ```js
 import { defineConfig } from 'astro/config';
@@ -243,6 +288,22 @@ npx vite-plugin-geo generate --verify --fail-on-audit warning
 ```
 
 `verify` 只读取最终 `dist/` 目录而不修改任何文件，检查范围涵盖 Sitemap `<loc>` 数量、首页收录、构建中间前缀残留（如 `/src/pages/`）、`.html` 扩展名泄漏、重复 `<loc>`、`<loc>` 到产物文件映射、`robots.txt` 的 `Sitemap:` 一致性、canonical 对齐、`llms.txt`、`feed.xml` 与 Markdown 镜像（递归解析最多 5 层 Sitemap 索引）。当报告输出到 stdout 时，人类可读日志自动分流至 stderr，便于管道解析。
+
+Vite+ 项目可通过 `vp exec` 或 `vpx` 调用 CLI：
+
+```bash
+vp build
+vp exec vite-plugin-geo verify --dist-dir dist --domain https://example.com
+```
+
+在 Vite+ Monorepo 中从仓库根目录调用 CLI 时，默认读取当前目录的 `./package.json`；针对子包构建产物请显式传入 `--domain` 或 `--package-json-path`：
+
+```bash
+vp build apps/web
+vp exec vite-plugin-geo verify --dist-dir apps/web/dist --package-json-path apps/web/package.json
+```
+
+如使用 Vite Task（`vite.config.ts` 中的 `run.tasks`）并开启缓存，建议将 GEO 生成保留在 `vp build`（Vite 插件）内，并将 `vite-plugin-geo verify` 配在通过 `dependsOn` 串联的下游校验任务中，避免多个任务并发或二次改写同一 `dist/` 文件。
 
 GitHub Actions 接入 SARIF 示例：
 
@@ -282,7 +343,7 @@ GitHub Actions 接入 SARIF 示例：
 | `--fail-on-verify <level>` | `none`、`error` 或 `warning`（默认 `error`）。 |
 | `--report <json\|sarif>` | 输出机器可读报告（`json` 或 `sarif`）。 |
 | `--report-file <path>` | 报告写入文件路径（默认 stdout）。 |
-| `--verify` | `generate` 完成后立即执行 `verify`。 |
+| `--verify / --no-verify` | `generate` 完成后立即执行 `verify` 的开关。 |
 | `--pretty-urls / --no-pretty-urls` | `.html` 后缀剥离开关。 |
 | `--sitemap-index / --no-sitemap-index` | Sitemap 自动拆分开关。 |
 | `--generate-sitemap / --no-generate-sitemap` | Sitemap 生成开关。 |
@@ -406,7 +467,7 @@ bun test --coverage
 # 校验 Vite Plugin Registry 扩展元数据 Schema
 bun run verify:registry-metadata
 
-# 使用打包产物验证 Vite 7/8 与 Astro 7 真实项目安装构建
+# 使用打包产物验证 Vite 7/8、Astro 7 与 Vite+ 1.x 真实项目安装构建（含 TypeScript 类型检查）
 bun run verify:consumers
 
 # 预览 npm 发包文件清单

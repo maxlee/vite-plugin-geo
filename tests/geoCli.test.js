@@ -282,4 +282,61 @@ describe('SEO CLI', () => {
     expect(exitCode).toBe(1);
     expect(messages.join('\n')).toMatch(/domain/i);
   });
+
+  it('supports --package-json-path false, empty --route-base-path overrides, and extensionless/Windows entrypoints', async () => {
+    expect(parseCliArgs(['--package-json-path', 'false']).options.packageJsonPath).toBe(false);
+    expect(parseCliArgs(['--package-json-path=false']).options.packageJsonPath).toBe(false);
+    expect(parseCliArgs(['--route-base-path', '']).options.routeBasePath).toBe('');
+    expect(parseCliArgs(['--route-base-path=']).options.routeBasePath).toBe('');
+    expect(() => parseCliArgs(['--route-base-path', '--domain', 'https://example.com'])).toThrow(/Missing value/);
+
+    const noExt = cliPath.replace(/\.js$/, '');
+    expect(isCliEntrypoint({
+      argv: ['node', noExt],
+      metaUrl: pathToFileURL(cliPath).href,
+      importMetaMain: false,
+    })).toBe(true);
+    expect(isCliEntrypoint({
+      argv: ['node', cliPath.toUpperCase()],
+      metaUrl: pathToFileURL(cliPath).href,
+      importMetaMain: false,
+      platform: 'win32',
+    })).toBe(true);
+  });
+
+  it('writes complete JSON report on stdout in a real subprocess without log pollution', () => {
+    const distDir = join(fixtureRoot, 'dist');
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(
+      join(distDir, 'index.html'),
+      '<html lang="en"><head><title>Subprocess Home</title><meta name="description" content="Home desc"></head><body><h1>Home</h1></body></html>',
+    );
+    writeFileSync(join(fixtureRoot, 'package.json'), JSON.stringify({
+      name: 'subprocess-fixture',
+      domain: 'https://sub.example.com',
+    }));
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        cliPath,
+        'generate',
+        '--dist-dir',
+        'dist',
+        '--verify',
+        '--report',
+        'json',
+        '--no-generate-feed',
+        '--no-llms-md-mirror',
+      ],
+      { cwd: fixtureRoot, encoding: 'utf-8' },
+    );
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.command).toBe('generate');
+    expect(parsed.verify.ok).toBe(true);
+    expect(parsed.generatedFiles.some((f) => f.filename === 'llms.txt' && typeof f.size === 'number')).toBe(true);
+    expect(result.stderr).toContain('[GEO verify]');
+  });
 });

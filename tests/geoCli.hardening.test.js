@@ -156,4 +156,102 @@ describe('CLI 0.2.0 hardening', () => {
     expect(await runCli(['generate', ...baseArgs], { cwd: f.root, ...relaxed.runtime })).toBe(0);
     expect(existsSync(join(f.distDir, 'llms.txt'))).toBe(true);
   });
+
+  it('supports --no-verify and rejects duplicate commands or invalid merged --config values', async () => {
+    expect(parseCliArgs(['--no-verify']).options.verify).toBe(false);
+    expect(() => parseCliArgs(['--no-verify=true'])).toThrow(/Use --verify=true\|false/);
+    expect(() => parseCliArgs(['verify', 'generate'])).toThrow(/Unexpected extra command/);
+
+    const f = fixture();
+    writeFileSync(join(f.root, 'bad-json.json'), '{not-json');
+    const badJsonRun = runtime();
+    expect(await runCli(['verify', '--config', 'bad-json.json'], { cwd: f.root, ...badJsonRun.runtime })).toBe(1);
+    expect(badJsonRun.messages.join('\n')).toContain('Invalid GEO config file');
+
+    writeFileSync(join(f.root, 'array.json'), '["dist"]');
+    const arrayRun = runtime();
+    expect(await runCli(['verify', '--config', 'array.json'], { cwd: f.root, ...arrayRun.runtime })).toBe(1);
+    expect(arrayRun.messages.join('\n')).toContain('top-level JSON value must be an object');
+
+    writeFileSync(join(f.root, 'bad-fields.json'), JSON.stringify({ verify: 'yes' }));
+    const badFieldsRun = runtime();
+    expect(await runCli(['generate', '--config', 'bad-fields.json'], { cwd: f.root, ...badFieldsRun.runtime })).toBe(1);
+    expect(badFieldsRun.messages.join('\n')).toContain("Option 'verify' must be a boolean");
+  });
+
+  it('honors report, verify, routeBasePath, and failOnVerify from --config and sanitizes prototype keys', async () => {
+    const f = fixture();
+    writeFileSync(join(f.distDir, 'humans.txt'), '/* custom humans */\n');
+    const configPath = join(f.root, 'geo.config.json');
+    writeFileSync(
+      configPath,
+      '{"__proto__":{"geoPolluted":true},"distDir":"dist","routeBasePath":"/docs","verify":true,"report":"json","generateFeed":false,"generateHumans":true,"llmsMdMirror":false}',
+    );
+
+    const r1 = runtime();
+    const code = await runCli(['generate', '--config', 'geo.config.json', '--route-base-path='], {
+      cwd: f.root,
+      ...r1.runtime,
+    });
+    expect(code).toBe(0);
+    expect(({}).geoPolluted).toBeUndefined();
+
+    const report = JSON.parse(r1.stdout());
+    expect(report.routeBasePath).toBe('');
+    expect(report.verify.ok).toBe(true);
+    expect(report.preservedFiles).toContain('humans.txt');
+    expect(report.fileCompatibility).toEqual({
+      policy: 'preserve',
+      decisions: [{ filename: 'humans.txt', decision: 'preserve' }],
+    });
+    expect(report.generatedFiles.some((item) => item.filename === 'llms.txt' && typeof item.size === 'number')).toBe(true);
+    // Human logs go to logger (stderr), never stdout when report comes from --config
+    expect(r1.messages.join('\n')).toContain('[GEO verify]');
+
+    // --config providing report format allows --report-file on CLI without --report
+    const r2 = runtime();
+    const code2 = await runCli(
+      ['verify', '--config', 'geo.config.json', '--route-base-path=', '--report-file', 'reports/verify.json'],
+      {
+        cwd: f.root,
+        ...r2.runtime,
+      },
+    );
+    expect(code2).toBe(0);
+    expect(r2.stdout()).toBe('');
+    expect(JSON.parse(readFileSync(join(f.root, 'reports/verify.json'), 'utf-8')).command).toBe('verify');
+
+    // Without --route-base-path= override, config's routeBasePath /docs mismatches dist and fails unless failOnVerify: none
+    const r3 = runtime();
+    expect(await runCli(['verify', '--config', 'geo.config.json'], { cwd: f.root, ...r3.runtime })).toBe(1);
+    const softConfig = join(f.root, 'geo.soft.json');
+    writeFileSync(softConfig, JSON.stringify({ distDir: 'dist', routeBasePath: '/docs', failOnVerify: 'none', generateFeed: false, llmsMdMirror: false }));
+    const r4 = runtime();
+    expect(await runCli(['verify', '--config', 'geo.soft.json'], { cwd: f.root, ...r4.runtime })).toBe(0);
+  });
+
+  it('reports empty generatedFiles when --fail-on-audit aborts before disk writes and escapes route conflict controls', async () => {
+    const f = fixture({ bare: true });
+    const gated = runtime();
+    const code = await runCli(
+      ['generate', ...baseArgs, '--fail-on-audit', 'warning', '--report', 'json'],
+      { cwd: f.root, ...gated.runtime },
+    );
+    expect(code).toBe(1);
+    const failedReport = JSON.parse(gated.stdout());
+    expect(failedReport.generatedFiles).toEqual([]);
+    expect(existsSync(join(f.distDir, 'llms.txt'))).toBe(false);
+
+    const conflictFixture = fixture();
+    writeFileSync(join(conflictFixture.distDir, 'guide.html'), '<html lang="en"><head><title>G</title><meta name="description" content="G"></head><body><h1>G</h1></body></html>');
+    mkdirSync(join(conflictFixture.distDir, 'guide'), { recursive: true });
+    writeFileSync(join(conflictFixture.distDir, 'guide/index.html'), '<html lang="en"><head><title>G2</title><meta name="description" content="G2"></head><body><h1>G2</h1></body></html>');
+    const cRun = runtime();
+    const cCode = await runCli(
+      ['generate', ...baseArgs, '--route-conflict', 'first'],
+      { cwd: conflictFixture.root, ...cRun.runtime },
+    );
+    expect(cCode).toBe(0);
+    expect(cRun.messages.join('\n')).toContain('Route conflict');
+  });
 });

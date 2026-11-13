@@ -1,8 +1,8 @@
 {
   "name": "vite-plugin-geo",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "$schema": "https://raw.githubusercontent.com/vitejs/vite-plugin-registry/refs/heads/main/data/schema/extended-package-json.schema.json",
-  "description": "Vite plugin to generate sitemap.xml, llms.txt, robots.txt, and optional GEO companion files.",
+  "description": "Vite, Vite+, and Astro plugin to generate sitemap.xml, llms.txt, robots.txt, and optional GEO companion files.",
   "type": "module",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
@@ -31,6 +31,8 @@
   "keywords": [
     "vite",
     "vite-plugin",
+    "vite-plus",
+    "viteplus",
     "geo",
     "seo",
     "sitemap",
@@ -58,13 +60,17 @@
   "peerDependenciesMeta": {
     "astro": {
       "optional": true
+    },
+    "vite": {
+      "optional": true
     }
   },
   "compatiblePackages": {
     "schemaVersion": 1,
     "vite": {
       "type": "compatible",
-      "versions": "^7.0.0 || ^8.0.0"
+      "versions": "^7.0.0 || ^8.0.0",
+      "note": "Also compatible with Vite+ (vite-plus) via @voidzero-dev/vite-plus-core bundling Vite 8 and Rolldown."
     },
     "rollup": {
       "type": "unknown"

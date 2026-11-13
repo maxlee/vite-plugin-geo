@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
 import { relative, resolve } from 'path';
-import { normalizeFilePath, resolvePagePath, extractPageMetadata } from './geoGenerator.js';
+import { compareCodeUnits, normalizeFilePath, resolvePagePath, extractPageMetadata } from './geoGenerator.js';
 
 const DEFAULT_SITE_METADATA = {
   title: 'My Site',
@@ -50,24 +50,39 @@ export function normalizeSiteDomain(domain, sourceLabel = 'domain') {
 }
 
 function readPackageJsonDomain(packageJsonPath) {
-  if (packageJsonPath === false) {
+  if (packageJsonPath === false || typeof packageJsonPath !== 'string' || !packageJsonPath.trim()) {
     return null;
   }
 
+  let rawContent;
   try {
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-
-    if (!hasOwn(packageJson, 'domain')) {
+    rawContent = readFileSync(packageJsonPath, 'utf-8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
       return null;
     }
-
-    return {
-      value: packageJson.domain,
-      sourceLabel: 'package.json "domain"',
-    };
-  } catch (error) {
-    throw new Error(`Missing required domain. Configure geo({ domain: 'https://example.com' }) or add "domain" to package.json.`);
+    throw new Error(`Failed to read package.json at ${packageJsonPath}: ${error?.message || String(error)}`);
   }
+
+  let packageJson;
+  try {
+    packageJson = JSON.parse(rawContent);
+  } catch (error) {
+    throw new Error(`Invalid package.json at ${packageJsonPath}: ${error?.message || String(error)}`);
+  }
+
+  if (!packageJson || typeof packageJson !== 'object' || Array.isArray(packageJson)) {
+    throw new Error(`Invalid package.json at ${packageJsonPath}: expected a JSON object.`);
+  }
+
+  if (!hasOwn(packageJson, 'domain')) {
+    return null;
+  }
+
+  return {
+    value: packageJson.domain,
+    sourceLabel: 'package.json "domain"',
+  };
 }
 
 function resolveConfiguredDomain(options, packageJsonPath) {
@@ -102,7 +117,7 @@ function resolveIndexHtmlPath(distDir, htmlFiles, stripPathPrefixes) {
       };
     })
     .filter((entry) => entry.pagePath === '')
-    .sort((a, b) => a.relativePath.length - b.relativePath.length);
+    .sort((a, b) => (a.relativePath.length - b.relativePath.length) || compareCodeUnits(a.relativePath, b.relativePath));
 
   return homePageCandidates[0]?.filePath || '';
 }
@@ -121,15 +136,18 @@ function resolveIndexHtmlPath(distDir, htmlFiles, stripPathPrefixes) {
  * @returns {{url: string, title: string, description: string, lang: string}} Site metadata
  */
 export function resolveSiteMetadataFromBuildOutput(distDir, options = {}) {
-  const packageJsonPath = options.packageJsonPath === undefined
+  const safeOptions = options && typeof options === 'object' ? options : {};
+  const packageJsonPath = safeOptions.packageJsonPath === undefined
     ? './package.json'
-    : options.packageJsonPath;
+    : safeOptions.packageJsonPath;
   const metadata = {
     ...DEFAULT_SITE_METADATA,
-    url: resolveConfiguredDomain(options, packageJsonPath),
+    url: resolveConfiguredDomain(safeOptions, packageJsonPath),
   };
-  const htmlFiles = options.htmlFiles || [];
-  const stripPathPrefixes = options.stripPathPrefixes || ['src/pages/'];
+  const htmlFiles = Array.isArray(safeOptions.htmlFiles) ? safeOptions.htmlFiles : [];
+  const stripPathPrefixes = Array.isArray(safeOptions.stripPathPrefixes)
+    ? safeOptions.stripPathPrefixes
+    : ['src/pages/'];
 
   const indexHtmlPath = resolveIndexHtmlPath(distDir, htmlFiles, stripPathPrefixes);
   if (!indexHtmlPath) {
@@ -151,6 +169,45 @@ export function resolveSiteMetadataFromBuildOutput(distDir, options = {}) {
     return metadata;
   }
 }
+function parsePackagePerson(entry) {
+  if (typeof entry === 'string') {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    // Parse "Name <email> (url)" or "Name (url) <email>"
+    const match = trimmed.match(/^([^<(]+?)(?:\s*<([^>]+)>|\s*\(([^)]+)\)){0,2}\s*$/);
+    if (!match) {
+      return null;
+    }
+
+    const name = match[1].trim();
+    if (!name) {
+      return null;
+    }
+
+    const rest = trimmed.slice(match[1].length);
+    const emailMatch = rest.match(/<([^>]+)>/);
+    const urlMatch = rest.match(/\(([^)]+)\)/);
+    return {
+      name,
+      email: emailMatch ? emailMatch[1].trim() : '',
+      url: urlMatch ? urlMatch[1].trim() : '',
+    };
+  }
+
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+    return {
+      name: typeof entry.name === 'string' ? entry.name.trim() : '',
+      email: typeof entry.email === 'string' ? entry.email.trim() : '',
+      url: typeof entry.url === 'string' ? entry.url.trim() : '',
+    };
+  }
+
+  return null;
+}
+
 /**
  * Extract team information from package.json.
  * @param {object} packageJson - Parsed package.json content
@@ -162,48 +219,18 @@ export function extractTeamInfoFromPackageJson(packageJson) {
     contributors: [],
   };
 
-  // Extract author information
-  if (packageJson.author) {
-    if (typeof packageJson.author === 'string') {
-      // Parse string format: "Name <email> (url)"
-      const match = packageJson.author.match(/^([^<(]+)(?:\s*<([^>]+)>)?(?:\s*\(([^)]+)\))?$/);
-      if (match) {
-        teamInfo.author = {
-          name: match[1].trim(),
-          email: match[2] ? match[2].trim() : '',
-          url: match[3] ? match[3].trim() : '',
-        };
-      }
-    } else if (typeof packageJson.author === 'object') {
-      teamInfo.author = {
-        name: packageJson.author.name || '',
-        email: packageJson.author.email || '',
-        url: packageJson.author.url || '',
-      };
-    }
+  if (!packageJson || typeof packageJson !== 'object') {
+    return teamInfo;
   }
 
-  // Extract contributors
+  if (packageJson.author) {
+    teamInfo.author = parsePackagePerson(packageJson.author);
+  }
+
   if (Array.isArray(packageJson.contributors)) {
-    teamInfo.contributors = packageJson.contributors.map(contributor => {
-      if (typeof contributor === 'string') {
-        const match = contributor.match(/^([^<(]+)(?:\s*<([^>]+)>)?(?:\s*\(([^)]+)\))?$/);
-        if (match) {
-          return {
-            name: match[1].trim(),
-            email: match[2] ? match[2].trim() : '',
-            url: match[3] ? match[3].trim() : '',
-          };
-        }
-      } else if (typeof contributor === 'object') {
-        return {
-          name: contributor.name || '',
-          email: contributor.email || '',
-          url: contributor.url || '',
-        };
-      }
-      return null;
-    }).filter(Boolean);
+    teamInfo.contributors = packageJson.contributors
+      .map(parsePackagePerson)
+      .filter(Boolean);
   }
 
   return teamInfo;
@@ -215,15 +242,26 @@ export function extractTeamInfoFromPackageJson(packageJson) {
  * @returns {string[]} Array of major framework/tool names
  */
 export function extractTechStackFromPackageJson(packageJson) {
+  if (!packageJson || typeof packageJson !== 'object') {
+    return [];
+  }
+
   const techStack = [];
+  const deps = packageJson.dependencies && typeof packageJson.dependencies === 'object' && !Array.isArray(packageJson.dependencies)
+    ? packageJson.dependencies
+    : {};
+  const devDeps = packageJson.devDependencies && typeof packageJson.devDependencies === 'object' && !Array.isArray(packageJson.devDependencies)
+    ? packageJson.devDependencies
+    : {};
   const dependencies = {
-    ...packageJson.dependencies,
-    ...packageJson.devDependencies,
+    ...deps,
+    ...devDeps,
   };
 
   // Major frameworks and tools to detect
   const majorTech = [
     'vite',
+    'vite-plus',
     'react',
     'vue',
     'angular',

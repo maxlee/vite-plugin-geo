@@ -161,4 +161,150 @@ describe('geo verify', () => {
       'llms-link-invalid',
     ]));
   });
+
+  it('prefers sitemap-index.xml over @astrojs/sitemap child shard sitemap-0.xml', async () => {
+    const f = fixture();
+    await generate(f, { stripPathPrefixes: [] });
+    // Recreate dist with clean pretty routes + @astrojs/sitemap layout
+    const dist2 = join(f.root, 'dist-astro');
+    mkdirSync(join(dist2, 'about'), { recursive: true });
+    writeFileSync(join(dist2, 'index.html'), page('Home'));
+    writeFileSync(join(dist2, 'about/index.html'), page('About'));
+    await generate({ root: f.root, distDir: dist2 });
+    unlinkSync(join(dist2, 'sitemap.xml'));
+    writeFileSync(
+      join(dist2, 'sitemap-0.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?><urlset><url><loc>${siteUrl}/</loc></url></urlset>`,
+    );
+    writeFileSync(
+      join(dist2, 'sitemap-1.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?><urlset><url><loc>${siteUrl}/about</loc></url></urlset>`,
+    );
+    writeFileSync(
+      join(dist2, 'sitemap-index.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?><sitemapindex><sitemap><loc>${siteUrl}/sitemap-0.xml</loc></sitemap><sitemap><loc>${siteUrl}/sitemap-1.xml</loc></sitemap></sitemapindex>`,
+    );
+    writeFileSync(join(dist2, 'robots.txt'), `User-agent: *\nAllow: /\nSitemap: ${siteUrl}/sitemap-index.xml\n`);
+
+    const result = verify({ root: f.root, distDir: dist2 });
+    expect(result.ok).toBe(true);
+    expect(result.summary.sitemapFile).toBe('sitemap-index.xml');
+    expect(result.summary.sitemapLocCount).toBe(2);
+    expect(result.checks.sitemapFiles).toEqual(['sitemap-index.xml', 'sitemap-0.xml', 'sitemap-1.xml']);
+  });
+
+  it('infers siteUrl from dist output or rejects malformed package.json and invalid options', async () => {
+    const f = fixture();
+    await generate(f);
+
+    // Infer from sitemap.xml when package.json lacks domain
+    writeFileSync(join(f.root, 'package.json'), JSON.stringify({ name: 'no-domain' }));
+    const inferred = verify(f);
+    expect(inferred.ok).toBe(true);
+    expect(inferred.summary.siteUrl).toBe(siteUrl);
+
+    // Infer from index.html canonical when sitemap is also absent
+    unlinkSync(join(f.distDir, 'sitemap.xml'));
+    writeFileSync(
+      join(f.distDir, 'index.html'),
+      `<html lang="en"><head><title>Home</title><link rel="canonical" href="${siteUrl}/"></head><body><h1>Home</h1></body></html>`,
+    );
+    const missingSitemap = verify({ root: f.root, distDir: f.distDir }, { generateSitemap: false });
+    expect(missingSitemap.summary.siteUrl).toBe(siteUrl);
+
+    // Surface malformed package.json rather than silently falling back
+    writeFileSync(join(f.root, 'package.json'), '{ invalid json');
+    expect(() => verify(f)).toThrow(/package\.json/);
+
+    // Enforce validateGeoOptions inside verifyGeoOutput
+    writeFileSync(join(f.root, 'package.json'), JSON.stringify({ name: 'valid', domain: siteUrl }));
+    expect(() => verify(f, { routeConflict: 'invalid-mode' })).toThrow(/Invalid GEO configuration/);
+  });
+
+  it('handles sitemapUrl with routeBasePath, base href, llms pretty URLs, and RSS non-permalink guids', async () => {
+    const f = fixture();
+    await generate(f, {
+      routeBasePath: '/docs',
+      sitemapUrl: '/docs/custom-sitemap.xml',
+      llmsMdMirror: false,
+    });
+    const generated = readFileSync(join(f.distDir, 'sitemap.xml'), 'utf-8');
+    unlinkSync(join(f.distDir, 'sitemap.xml'));
+    writeFileSync(join(f.distDir, 'custom-sitemap.xml'), generated);
+    writeFileSync(
+      join(f.distDir, 'robots.txt'),
+      `User-agent: *\nAllow: /\nSitemap: ${siteUrl}/docs/custom-sitemap.xml\n`,
+    );
+
+    // Non-permalink guid in feed.xml should not cause feed-link-invalid
+    writeFileSync(
+      join(f.distDir, 'feed.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item><link>${siteUrl}/docs/about</link><guid isPermaLink="false">post-about-1</guid></item></channel></rss>`,
+    );
+
+    const healthy = verify(f, {
+      routeBasePath: '/docs',
+      sitemapUrl: '/docs/custom-sitemap.xml',
+      llmsMdMirror: false,
+    });
+    expect(healthy.ok).toBe(true);
+    expect(healthy.summary.sitemapFile).toBe('custom-sitemap.xml');
+    expect(healthy.warnings.map((w) => w.rule)).not.toContain('feed-link-invalid');
+
+    // Extensionless pretty-URL in llms.txt absent from sitemap must warn llms-link-invalid
+    writeFileSync(
+      join(f.distDir, 'custom-sitemap.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?><urlset><url><loc>${siteUrl}/docs</loc></url></urlset>`,
+    );
+    const mismatch = verify(f, {
+      routeBasePath: '/docs',
+      sitemapUrl: '/docs/custom-sitemap.xml',
+      llmsMdMirror: false,
+    });
+    expect(mismatch.warnings.map((w) => w.rule)).toContain('llms-link-invalid');
+  });
+
+  it('strips XML comments, preserves literal CDATA &amp;, handles out-of-range entities, and bounds index depth', async () => {
+    const f = fixture();
+    await generate(f, { llmsMdMirror: false, generateFeed: false });
+
+    writeFileSync(
+      join(f.distDir, 'index.html'),
+      `<html lang="en"><head><title>Home</title><base href="/sub/"><link rel="canonical" href="${siteUrl}/"><link rel="describedby" type="text/markdown" href="/llms.txt"></head><body><h1>Home</h1></body></html>`,
+    );
+    writeFileSync(
+      join(f.distDir, 'sitemap.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+      <!-- <url><loc>https://example.test/commented-out</loc></url> -->
+      <urlset>
+        <url><loc><![CDATA[${siteUrl}/missing?q=1&amp;2=3]]></loc></url>
+        <url><loc>${siteUrl}/?a=1&amp;b=2</loc></url>
+        <url><loc>${siteUrl}/about</loc></url>
+      </urlset>`,
+    );
+    writeFileSync(
+      join(f.distDir, 'about.html'),
+      `<html lang="en"><head><title>About &#99999999;</title><link rel="canonical" href="${siteUrl}/about"><link rel="describedby" type="text/markdown" href="/llms.txt"></head><body><h1>About</h1></body></html>`,
+    );
+
+    const parsedResult = verify(f, { llmsMdMirror: false, generateFeed: false });
+    expect(parsedResult.errors.map((e) => e.rule)).toContain('sitemap-homepage-missing');
+    expect(parsedResult.errors.map((e) => e.rule)).toContain('sitemap-unmapped-loc');
+    const unmappedEvidence = parsedResult.errors.find((e) => e.rule === 'sitemap-unmapped-loc')?.evidence || '';
+    expect(unmappedEvidence).toContain('?q=1&amp;2=3');
+    const allEvidence = parsedResult.errors.map((e) => e.evidence).join('\n');
+    expect(allEvidence).not.toContain('commented-out');
+    expect(parsedResult.checks.sitemapFiles).toEqual(['sitemap.xml']);
+    expect(parsedResult.summary.sitemapLocCount).toBe(3);
+    // Verify depth limit > 5
+    for (let d = 1; d <= 7; d += 1) {
+      const child = d === 7 ? 'sitemap-leaf.xml' : `sitemap-d${d + 1}.xml`;
+      const xml = d === 7
+        ? `<?xml version="1.0" encoding="UTF-8"?><urlset><url><loc>${siteUrl}</loc></url><url><loc>${siteUrl}/about</loc></url></urlset>`
+        : `<?xml version="1.0" encoding="UTF-8"?><sitemapindex><sitemap><loc>${siteUrl}/${child}</loc></sitemap></sitemapindex>`;
+      writeFileSync(join(f.distDir, d === 1 ? 'sitemap.xml' : `sitemap-d${d}.xml`), xml);
+    }
+    const depthResult = verify(f, { llmsMdMirror: false, generateFeed: false });
+    expect(depthResult.warnings.map((w) => w.rule)).toContain('sitemap-index-depth');
+  });
 });

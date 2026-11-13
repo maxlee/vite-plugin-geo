@@ -156,4 +156,27 @@ describe('lastmod resolution', () => {
     expect(() => validateGeoOptions({ auditFailOn: 'nope' })).toThrow(/auditFailOn/);
     expect(() => validateGeoOptions({ lastmodIgnore: 'about.html' })).toThrow(/lastmodIgnore/);
   });
+
+  it('passes populated pageUrl to lastmodResolver and skips excluded pages', async () => {
+    const f = fixture({
+      'index.html': page('Home'),
+      '404.html': page('Missing'),
+      'secret.html': '<html><head><meta name="robots" content="noindex"></head><body>Hidden</body></html>',
+    });
+    const seen = [];
+    await planFor(f, {
+      lastmodResolver: (model) => {
+        seen.push({ relativePath: model.relativePath, pageUrl: model.pageUrl, filePageUrl: model.filePageUrl });
+        return '2026-05-01';
+      },
+    });
+
+    expect(seen).toEqual([
+      {
+        relativePath: 'index.html',
+        pageUrl: 'https://example.test',
+        filePageUrl: 'https://example.test/',
+      },
+    ]);
+  });
 });

@@ -5,9 +5,10 @@
  * scanning, GitLab and other CI systems can ingest them directly.
  */
 
-import { writeFileSync } from 'fs';
-import { isAbsolute, relative, resolve } from 'path';
+import { mkdirSync, writeFileSync } from 'fs';
+import { dirname, isAbsolute, relative, resolve } from 'path';
 import { pathToFileURL } from 'url';
+import { compareCodeUnits, isWithinDir, sanitizeControlChars } from './geoGenerator.js';
 
 const TOOL_NAME = 'vite-plugin-geo';
 const JSON_SCHEMA_VERSION = '1.0';
@@ -22,28 +23,34 @@ function auditCounts(audit) {
   };
 }
 
+function sanitizeText(value) {
+  return sanitizeControlChars(value, { preserveNewlines: false });
+}
+
 function normalizeDiagnostic(diagnostic, fallbackSeverity) {
   return {
-    path: String(diagnostic.path || ''),
-    rule: String(diagnostic.rule || 'unknown'),
+    path: sanitizeText(diagnostic.path || ''),
+    rule: sanitizeText(diagnostic.rule || 'unknown'),
     severity: diagnostic.severity || fallbackSeverity,
-    evidence: String(diagnostic.evidence || ''),
-    suggestion: String(diagnostic.suggestion || ''),
+    evidence: sanitizeText(diagnostic.evidence || ''),
+    suggestion: sanitizeText(diagnostic.suggestion || ''),
   };
 }
 
 /**
  * Create the versioned JSON report.
  *
- * @param {object} params
+ * @param {object} [params={}]
  * @param {'generate'|'verify'} [params.command='generate']
  * @param {string} [params.version='unknown']
- * @param {string} [params.siteUrl]
+ * @param {string|null} [params.siteUrl]
  * @param {string} [params.routeBasePath='']
- * @param {string} [params.distDir]
- * @param {object} [params.audit] - auditGeoPlan result
- * @param {object} [params.verify] - verifyGeoOutput result
- * @param {string[]} [params.generatedFiles=[]]
+ * @param {string|null} [params.distDir]
+ * @param {object|null} [params.audit] - auditGeoPlan result
+ * @param {object|null} [params.verify] - verifyGeoOutput result
+ * @param {Array<string|{filename: string, size?: number}>} [params.generatedFiles=[]]
+ * @param {string[]} [params.preservedFiles=[]]
+ * @param {object|null} [params.fileCompatibility=null]
  * @param {string} [params.generatedAt]
  * @returns {object}
  */
@@ -56,6 +63,8 @@ export function createJsonReport({
   audit,
   verify,
   generatedFiles = [],
+  preservedFiles = [],
+  fileCompatibility = null,
   generatedAt,
 } = {}) {
   const auditSummary = auditCounts(audit);
@@ -93,37 +102,76 @@ export function createJsonReport({
           diagnostics: (audit.diagnostics || []).map((item) => normalizeDiagnostic(item, 'advice')),
         }
       : null,
-    generatedFiles: generatedFiles.map((entry) => (
-      typeof entry === 'string' ? { filename: entry } : entry
+    generatedFiles: (generatedFiles || []).map((entry) => (
+      typeof entry === 'string'
+        ? { filename: sanitizeText(entry) }
+        : { ...entry, filename: sanitizeText(entry?.filename || '') }
     )),
+    preservedFiles: Array.isArray(preservedFiles)
+      ? preservedFiles.map((filename) => sanitizeText(filename))
+      : [],
+    fileCompatibility: fileCompatibility ?? null,
   };
 }
 
-function resolveArtifactUri(pathValue, projectRoot, distDir) {
-  const raw = String(pathValue || '').replace(/\\/g, '/');
+function encodeRelativeUri(relativePath) {
+  const segments = String(relativePath || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.?\//, '')
+    .split('/')
+    .filter((segment) => segment !== '' && segment !== '.');
+  if (segments.length === 0) return null;
+  return segments.map((segment) => encodeURIComponent(segment)).join('/');
+}
+
+function resolveArtifactLocation(pathValue, projectRoot, distDir) {
+  const raw = sanitizeText(pathValue).replace(/\\/g, '/').trim();
   if (!raw) return null;
-  if (isAbsolute(pathValue)) {
-    return pathToFileURL(pathValue).href;
+
+  if (/^(?:file|https?):\/\//i.test(raw)) {
+    return { uri: raw };
+  }
+
+  const resolvedProjectRoot = projectRoot ? resolve(projectRoot) : null;
+
+  if (isAbsolute(raw)) {
+    const resolvedTarget = resolve(raw);
+    if (resolvedProjectRoot && isWithinDir(resolvedProjectRoot, resolvedTarget)) {
+      const encoded = encodeRelativeUri(relative(resolvedProjectRoot, resolvedTarget));
+      if (encoded) {
+        return { uri: encoded, uriBaseId: '%SRCROOT%' };
+      }
+    }
+    return { uri: pathToFileURL(resolvedTarget).href };
   }
 
   const normalized = raw.replace(/^\.?\//, '');
-  if (!projectRoot || !distDir) return normalized;
+  if (!resolvedProjectRoot) {
+    const encoded = encodeRelativeUri(normalized);
+    return encoded ? { uri: encoded } : null;
+  }
 
-  const distRelative = relative(resolve(projectRoot), resolve(distDir)).replace(/\\/g, '/');
-  return distRelative && distRelative !== '.'
-    ? `${distRelative.replace(/\/+$/, '')}/${normalized}`
-    : normalized;
+  const baseDir = distDir ? resolve(resolvedProjectRoot, distDir) : resolvedProjectRoot;
+  const resolvedTarget = resolve(baseDir, normalized);
+  if (isWithinDir(resolvedProjectRoot, resolvedTarget)) {
+    const encoded = encodeRelativeUri(relative(resolvedProjectRoot, resolvedTarget));
+    if (encoded) {
+      return { uri: encoded, uriBaseId: '%SRCROOT%' };
+    }
+  }
+
+  return { uri: pathToFileURL(resolvedTarget).href };
 }
 
 /**
  * Create a SARIF 2.1.0 report.
  *
- * @param {object} params
+ * @param {object} [params={}]
  * @param {string} [params.version='unknown']
- * @param {object} [params.audit]
- * @param {object} [params.verify]
+ * @param {object|null} [params.audit]
+ * @param {object|null} [params.verify]
  * @param {string} [params.projectRoot]
- * @param {string} [params.distDir]
+ * @param {string|null} [params.distDir]
  * @returns {object}
  */
 export function createSarifReport({
@@ -147,7 +195,7 @@ export function createSarifReport({
       });
     }
 
-    const uri = resolveArtifactUri(normalized.path, projectRoot, distDir);
+    const location = resolveArtifactLocation(normalized.path, projectRoot, distDir);
     const message = normalized.evidence
       ? `${normalized.evidence}${normalized.suggestion ? `；${normalized.suggestion}` : ''}`
       : normalized.rule;
@@ -157,13 +205,10 @@ export function createSarifReport({
       level,
       message: { text: message },
     };
-    if (uri) {
+    if (location) {
       result.locations = [{
         physicalLocation: {
-          artifactLocation: {
-            uri,
-            ...(projectRoot ? { uriBaseId: '%SRCROOT%' } : {}),
-          },
+          artifactLocation: location,
         },
       }];
     }
@@ -189,7 +234,7 @@ export function createSarifReport({
           name: TOOL_NAME,
           informationUri: 'https://github.com/maxlee/vite-plugin-geo',
           version,
-          rules: [...rules.values()].sort((a, b) => a.id.localeCompare(b.id)),
+          rules: [...rules.values()].sort((a, b) => compareCodeUnits(a.id, b.id)),
         },
       },
       ...(projectRoot
@@ -211,7 +256,7 @@ export function createSarifReport({
  * @param {'json'|'sarif'} params.format
  * @param {string|null} [params.filePath]
  * @param {object} params.report
- * @param {NodeJS.WritableStream} [params.stdout]
+ * @param {{write: (chunk: string) => unknown}} [params.stdout]
  * @returns {{written: boolean, target: 'file'|'stdout', filePath?: string}}
  */
 export function writeReport({ format, filePath, report, stdout = process.stdout }) {
@@ -221,6 +266,7 @@ export function writeReport({ format, filePath, report, stdout = process.stdout 
 
   const content = `${JSON.stringify(report, null, 2)}\n`;
   if (filePath) {
+    mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, content, 'utf-8');
     return { written: true, target: 'file', filePath };
   }

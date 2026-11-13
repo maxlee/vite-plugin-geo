@@ -146,4 +146,48 @@ describe('static GEO audit', () => {
     logGeoAudit(run([]), { log: (v) => messages.push(v), warn: () => {} });
     expect(messages.at(-1)).toContain('未检查');
   });
+
+  it('trims lang attributes and validates directory canonicals under prettyUrls: false', () => {
+    const home = page('index.html', '<html lang=" en "><head><title>Home</title><meta name="description" content="Home desc"><link rel="canonical" href="https://example.com/"><link rel="describedby" type="text/markdown" href="/llms.txt"></head><body><h1>Home</h1></body></html>', { lang: ' en ' });
+    const about = page('about/index.html', '<html lang="en-US"><head><title>About</title><meta name="description" content="About desc"><link rel="canonical" href="https://example.com/about/"><link rel="describedby" type="text/markdown" href="/llms.txt"></head><body><h1>About</h1></body></html>', {
+      pageUrl: `${siteUrl}/about/index.html`,
+      filePageUrl: `${siteUrl}/about/index.html`,
+    });
+
+    const result = run([home, about], {
+      options: { prettyUrls: false, generateFeed: false, llmsMdMirror: false },
+    });
+    expect(rules(result)).not.toContain('invalid-lang');
+    expect(rules(result)).not.toContain('canonical-self');
+
+    const invalid = page('bad.html', '<html lang="english_uk"><head><title>Bad</title><meta name="description" content="Bad desc"><link rel="canonical" href="https://example.com/bad.html"><link rel="describedby" type="text/markdown" href="/llms.txt"></head><body><h1>Bad</h1></body></html>', {
+      lang: 'english_uk',
+    });
+    expect(rules(run([invalid]))).toContain('lang-invalid');
+  });
+
+  it('ignores global options.hreflang patterns when hreflangFromHtml is enabled', () => {
+    const home = page();
+    const hidden = page('private.html', '', { noindex: true });
+    const result = run([home], {
+      allPages: [home, hidden],
+      options: {
+        generateFeed: false,
+        llmsMdMirror: false,
+        hreflangFromHtml: true,
+        hreflang: { en: '/private.html' },
+      },
+    });
+    expect(rules(result)).not.toContain('hreflang-noindex');
+  });
+
+  it('sorts diagnostics by ASCII code units regardless of locale', () => {
+    const underscore = page('_draft.html', '<html lang="en"><head><title>D</title></head><body><h1>D</h1></body></html>');
+    const alpha = page('alpha.html', '<html lang="en"><head><title>A</title></head><body><h1>A</h1></body></html>');
+    const report = run([alpha, underscore]);
+    const metaMissingPaths = report.diagnostics
+      .filter((item) => item.rule === 'description-missing')
+      .map((item) => item.path);
+    expect(metaMissingPaths).toEqual(['_draft.html', 'alpha.html']);
+  });
 });

@@ -65,10 +65,16 @@ describe('vite-plugin-geo publish manifest', () => {
       },
     });
 
+    expect(manifest.keywords).toEqual(
+      expect.arrayContaining(['vite', 'vite-plugin', 'vite-plus', 'viteplus']),
+    );
     expect(manifest.peerDependencies.vite).toBe('^7.0.0 || ^8.0.0');
     expect(manifest.peerDependencies.astro).toBe('^7.0.0');
     expect(manifest.peerDependenciesMeta).toEqual({
       astro: {
+        optional: true,
+      },
+      vite: {
         optional: true,
       },
     });
@@ -98,6 +104,7 @@ describe('vite-plugin-geo publish manifest', () => {
       vite: {
         type: 'compatible',
         versions: '^7.0.0 || ^8.0.0',
+        note: 'Also compatible with Vite+ (vite-plus) via @voidzero-dev/vite-plus-core bundling Vite 8 and Rolldown.',
       },
       rollup: {
         type: 'unknown',
@@ -156,6 +163,8 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(readme).toContain('## Features');
     expect(readme).toContain('## Installation');
     expect(readme).toContain('## Quick start');
+    expect(readme).toContain('### Vite+');
+    expect(readme).toContain('lazyPlugins');
     expect(readme).toContain('## Generated files');
     expect(readme).toContain('## Configuration');
     expect(readme).toContain('<details>');
@@ -186,6 +195,8 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(readmeZh).toMatch(/^# vite-plugin-geo/m);
     expect(readmeZh).toContain('[English](./README.md)');
     expect(readmeZh).toContain('## 核心特性');
+    expect(readmeZh).toContain('### Vite+ 项目');
+    expect(readmeZh).toContain('lazyPlugins');
     expect(readmeZh).toContain('可选 Astro peer');
     expect(readmeZh).not.toContain('STANDARDS.md');
 
@@ -282,7 +293,7 @@ describe('vite-plugin-geo publish manifest', () => {
       defaultType: 'function',
       namedMatchesDefault: true,
       integrationName: 'vite-plugin-geo',
-      hookNames: ['astro:build:done', 'astro:config:done'],
+      hookNames: ['astro:build:done', 'astro:config:done', 'astro:routes:resolved'],
     });
   });
 });

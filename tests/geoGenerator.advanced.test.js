@@ -13,6 +13,8 @@ import {
   generateRobotsTxt,
   generateHumansTxt,
   generateFeedXml,
+  injectFeedLink,
+  injectLlmsDiscoveryLinks,
 } from '../src/geoGenerator.js';
 import {
   extractTeamInfoFromPackageJson,
@@ -473,6 +475,63 @@ describe('Phase 3 - Advanced Features Tests', () => {
       expect(result).toContain('vitest');
       expect(result).not.toContain('axios'); // Not a major framework
       expect(result).not.toContain('eslint'); // Not a major framework
+    });
+
+    it('should detect vite-plus in tech stack and handle non-object/reordered contributor fields safely', () => {
+      expect(extractTechStackFromPackageJson({ dependencies: { 'vite-plus': '^0.1.0' } })).toContain('vite-plus');
+      expect(extractTechStackFromPackageJson(null)).toEqual([]);
+
+      const team = extractTeamInfoFromPackageJson({
+        author: 'Alice (https://alice.example) <alice@example.com>',
+        contributors: [null, 'Bob <bob@example.com>', { name: 'Carol' }],
+      });
+      expect(team.author).toEqual({
+        name: 'Alice',
+        email: 'alice@example.com',
+        url: 'https://alice.example',
+      });
+      expect(team.contributors).toHaveLength(2);
+    });
+
+    it('rejects control-char/scheme injections in robots.txt and safely handles invalid dates in humans.txt and feed.xml', () => {
+      expect(() => generateRobotsTxt('https://example.com', {
+        sitemapUrl: 'https://example.com/sitemap.xml\nDisallow: /',
+      })).toThrow(/Invalid public file URL/);
+      expect(() => generateRobotsTxt('https://example.com', {
+        sitemapUrl: 'javascript:alert(1)',
+      })).toThrow(/http:\/\/ or https:\/\//);
+
+      const humans = generateHumansTxt({
+        author: { name: 'Dev\n/* FAKE */', email: 'dev@example.com', url: 'https://example.com' },
+      }, '2026-07-29T00:00:00.000Z', { extractTeamInfoFromPackageJson, extractTechStackFromPackageJson });
+      expect(humans).toContain('  Developer: Dev /* FAKE */');
+      expect(() => generateHumansTxt({}, 'not-a-date')).toThrow(/Invalid buildDate/);
+
+      const feed = generateFeedXml([
+        { url: 'https://example.com/a', title: 'A\x00', description: 'Desc', mtime: 'bad-date' },
+        { url: 'https://example.com/b', title: 'B', description: 'Desc', mtime: '2026-07-29T00:00:00.000Z' },
+      ], {
+        url: 'https://example.com',
+        title: 'Site',
+        description: 'Desc',
+        lang: 'en',
+      }, '2026-07-29T00:00:00.000Z');
+      expect(feed.indexOf('https://example.com/b')).toBeLessThan(feed.indexOf('https://example.com/a'));
+      expect(feed).not.toContain('\x00');
+    });
+
+    it('escapes HTML attributes and avoids $& expansion in discovery link injection', () => {
+      const html = '<html><head><title>Hi</title></head><body></body></html>';
+      const withDiscovery = injectLlmsDiscoveryLinks(html, {
+        markdownUrl: 'https://example.com/a"b/$&.md',
+        llmsUrl: 'https://example.com/llms.txt',
+        pageUrl: 'https://example.com',
+      });
+      expect(withDiscovery).toContain('href="https://example.com/a&quot;b/$&amp;.md"');
+      expect(withDiscovery).not.toContain('</head>.md');
+
+      const withFeed = injectFeedLink(html, 'https://example.com/feed"x/$&.xml');
+      expect(withFeed).toContain('href="https://example.com/feed&quot;x/$&amp;.xml"');
     });
   });
 });

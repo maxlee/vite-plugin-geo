@@ -1,5 +1,5 @@
 import { assertAuditGate, logGeoAudit } from './geoAudit.js';
-import { readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { isAbsolute, join, resolve } from 'path';
 import {
   buildGeoGenerationPlan,
@@ -11,7 +11,7 @@ import {
   validateGeoOptions,
 } from './geoBuildPipeline.js';
 import { isAstroProject } from './astroSitemapCompatibility.js';
-import { normalizeRouteBasePath } from './geoGenerator.js';
+import { isWithinDir, normalizeRouteBasePath } from './geoGenerator.js';
 
 function resolveDistDir(config, explicitDistDir) {
   const configRoot = config?.root ?? process.cwd();
@@ -93,8 +93,52 @@ function collectPublicDirAssets(publicDir, assets) {
   walk(publicDir, '');
 }
 
+function decodeAssetSource(source) {
+  if (typeof source === 'string') {
+    return source;
+  }
+  if (source instanceof Uint8Array || ArrayBuffer.isView(source)) {
+    return Buffer.from(source.buffer, source.byteOffset, source.byteLength).toString('utf-8');
+  }
+  if (source instanceof ArrayBuffer) {
+    return Buffer.from(source).toString('utf-8');
+  }
+  return String(source);
+}
+
+function resolveViteAssetFilePath(asset, distDir, projectRoot) {
+  const originalPath = (Array.isArray(asset?.originalFileNames) && asset.originalFileNames[0])
+    || asset?.originalFileName;
+  if (typeof originalPath === 'string' && originalPath.trim()) {
+    const candidatePath = resolve(projectRoot, originalPath);
+    if (isWithinDir(projectRoot, candidatePath) && existsSync(candidatePath)) {
+      return candidatePath;
+    }
+  }
+  return resolve(distDir, asset.fileName);
+}
+
+function hasAstroVitePlugin(config) {
+  return Array.isArray(config?.plugins) && config.plugins.some(
+    (plugin) => typeof plugin?.name === 'string' && plugin.name.startsWith('astro:'),
+  );
+}
+
+function hasMultiEnvClientBuild(environment, config, { allowSsrFlag = false } = {}) {
+  const topEnvironments = environment?.getTopLevelConfig?.().environments ?? config?.environments;
+  if (!topEnvironments || typeof topEnvironments !== 'object') {
+    return false;
+  }
+  return Object.values(topEnvironments).some((envConfig) => (
+    envConfig
+    && envConfig !== config
+    && envConfig.consumer === 'client'
+    && (allowSsrFlag || !envConfig.build?.ssr)
+  ));
+}
+
 function collectOutputAssets(bundle, config) {
-  const assets = Object.values(bundle || [])
+  const assets = Object.values(bundle || {})
     .filter((output) => (
       output?.type === 'asset'
       && output.source !== undefined
@@ -102,7 +146,7 @@ function collectOutputAssets(bundle, config) {
     ))
     .map((output) => ({
       filename: output.fileName,
-      content: String(output.source),
+      content: decodeAssetSource(output.source),
     }));
 
   // Vite copies public files separately; scan them so a public/sitemap.xml
@@ -126,7 +170,7 @@ export function createGeoGeneratorPlugin(options = {}) {
   logPluginVersion(options);
 
   const debug = createDebugLogger(options.debug === true);
-  let resolvedConfig;
+  let fallbackResolvedConfig;
   let astroUsageWarningShown = false;
 
   return {
@@ -134,8 +178,17 @@ export function createGeoGeneratorPlugin(options = {}) {
     apply: 'build',
     enforce: 'post',
 
+    applyToEnvironment(environment) {
+      const envConfig = environment?.config;
+      const isServerEnv = envConfig?.consumer === 'server' || Boolean(envConfig?.build?.ssr);
+      if (!isServerEnv) {
+        return true;
+      }
+      return !hasMultiEnvClientBuild(environment, envConfig);
+    },
+
     configResolved(config) {
-      resolvedConfig = config;
+      fallbackResolvedConfig = config;
       if (typeof options.routeBasePath !== 'string') {
         try {
           normalizeRouteBasePath(config.base, { source: 'Vite base' });
@@ -161,13 +214,19 @@ export function createGeoGeneratorPlugin(options = {}) {
       order: 'post',
       sequential: true,
       async handler(outputOptions, bundle) {
+        const resolvedConfig = this.environment?.config ?? fallbackResolvedConfig;
         const htmlAssets = collectHtmlAssetsFromBundle(bundle);
         const projectRoot = resolvedConfig?.root || process.cwd();
 
         if (htmlAssets.length === 0) {
+          const isAstro = hasAstroVitePlugin(resolvedConfig) || isAstroProject(projectRoot);
+          const isServerEnv = resolvedConfig?.consumer === 'server' || Boolean(resolvedConfig?.build?.ssr);
+          if (isServerEnv && hasMultiEnvClientBuild(this.environment, resolvedConfig, { allowSsrFlag: isAstro })) {
+            return;
+          }
           const distDir = resolveDistDir(resolvedConfig, outputOptions.dir || options.distDir);
           const sourceHtmlDir = resolveSourceHtmlDir(resolvedConfig, options.sourceHtmlDir);
-          const buildShape = resolvedConfig?.build?.ssr
+          const buildShape = isServerEnv
             ? 'SSR'
             : (resolvedConfig?.build?.lib ? 'library' : 'static');
           console.warn(
@@ -179,7 +238,7 @@ export function createGeoGeneratorPlugin(options = {}) {
             console.warn(`⚠️  [vite-plugin-geo] ${buildShape} builds do not emit static HTML; GEO generation is skipped by design.`);
           }
           if (options.audit !== false) logGeoAudit({ checkedPages: 0, diagnostics: [] }, console);
-          if (isAstroProject(projectRoot) && !astroUsageWarningShown) {
+          if (isAstro && !astroUsageWarningShown) {
             console.warn("⚠️  Astro generates HTML after Vite finishes. Move this plugin from vite.plugins to integrations and import it from 'vite-plugin-geo/astro'.");
             astroUsageWarningShown = true;
           }
@@ -199,9 +258,9 @@ export function createGeoGeneratorPlugin(options = {}) {
           projectRoot,
           distDir,
           htmlInputs: htmlAssets.map((asset) => ({
-            filePath: resolve(distDir, asset.fileName),
+            filePath: resolveViteAssetFilePath(asset, distDir, projectRoot),
             relativePath: asset.fileName,
-            htmlContent: String(asset.source),
+            htmlContent: decodeAssetSource(asset.source),
           })),
           outputAssets: collectOutputAssets(bundle, resolvedConfig),
           options: {
@@ -283,7 +342,13 @@ export function resolvePluginVersion() {
 const PLUGIN_VERSION = resolvePluginVersion();
 
 function logPluginVersion(options = {}) {
-  if (options.debug !== true) return;
+  if (
+    options.debug !== true
+    || process.env.VP_RESOLVING_CONFIG_METADATA === '1'
+    || Boolean(process.env.VITEST)
+  ) {
+    return;
+  }
 
   console.log(`\n🔧 vite-plugin-geo v${PLUGIN_VERSION}`);
   const resolvedSummary = {

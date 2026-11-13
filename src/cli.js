@@ -12,7 +12,9 @@ import {
   logRobotsPreservation,
   logSitemapCompatibility,
   summarizeExcludedReasons,
+  validateGeoOptions,
 } from './geoBuildPipeline.js';
+import { sanitizeControlChars } from './geoGenerator.js';
 import { verifyGeoOutput } from './geoVerify.js';
 import { createJsonReport, createSarifReport, writeReport } from './geoReport.js';
 import { resolvePluginVersion } from './viteGeoGeneratorPlugin.js';
@@ -51,7 +53,7 @@ Options:
   --fail-on-verify <level>    none | error | warning (default: error)
   --report <json|sarif>       Write a machine-readable report
   --report-file <path>        Report output path (default: stdout)
-  --verify                    Run verification after generation
+  --verify / --no-verify      Run verification after generation
   --debug / --no-debug
   --config <path>              JSON config file path
   -h, --help                   Show help
@@ -60,6 +62,7 @@ Options:
 const REPORT_FORMATS = ['json', 'sarif'];
 const FAIL_ON_AUDIT_VALUES = ['none', 'warning', 'advice'];
 const FAIL_ON_VERIFY_VALUES = ['none', 'error', 'warning'];
+const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function parseListValue(value) {
   return String(value)
@@ -77,28 +80,58 @@ function parseBooleanValue(value, flagName) {
   throw new Error(`Invalid boolean for ${flagName}: ${value}. Use true or false.`);
 }
 
-function parseNonBooleanValue(args, index, flagName) {
+function parseNonBooleanValue(args, index, flagName, { allowEmpty = false } = {}) {
   const token = args[index];
   if (token?.includes('=')) {
     const value = token.split('=').slice(1).join('=');
-    if (value === '') {
+    if (value === '' && !allowEmpty) {
       throw new Error(`Missing value for ${flagName}`);
     }
     return { value, nextIndex: index };
   }
 
   const nextValue = args[index + 1];
-  if (!nextValue || nextValue.startsWith('-')) {
+  if (nextValue === undefined || (!allowEmpty && nextValue === '') || nextValue.startsWith('-')) {
     throw new Error(`Missing value for ${flagName}`);
   }
 
   return { value: nextValue, nextIndex: index + 1 };
 }
 
+function sanitizeConfigValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeConfigValue(item));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const clean = {};
+  Object.entries(value).forEach(([key, entry]) => {
+    if (!UNSAFE_OBJECT_KEYS.has(key)) {
+      clean[key] = sanitizeConfigValue(entry);
+    }
+  });
+  return clean;
+}
+
+function readJsonConfig(configPath, cwd) {
+  const resolvedPath = resolvePathFromCwd(cwd, configPath);
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(resolvedPath, 'utf-8'));
+  } catch (error) {
+    throw new Error(`Invalid GEO config file (${resolvedPath}): ${error.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Invalid GEO config file (${resolvedPath}): top-level JSON value must be an object.`);
+  }
+  return sanitizeConfigValue(parsed);
+}
+
 function mergeConfigWithCliOptions(configOptions, cliOptions) {
-  const merged = { ...configOptions };
+  const merged = sanitizeConfigValue(configOptions);
   Object.entries(cliOptions).forEach(([key, value]) => {
-    if (value !== undefined) {
+    if (value !== undefined && !UNSAFE_OBJECT_KEYS.has(key)) {
       merged[key] = value;
     }
   });
@@ -111,9 +144,13 @@ const CLI_ARG_DEFS = [
   { flag: '--config', key: 'config' },
   { flag: '--domain', key: 'domain' },
   { flag: '--dist-dir', key: 'distDir' },
-  { flag: '--route-base-path', key: 'routeBasePath' },
+  { flag: '--route-base-path', key: 'routeBasePath', allowEmpty: true },
   { flag: '--source-html-dir', key: 'sourceHtmlDir' },
-  { flag: '--package-json-path', key: 'packageJsonPath' },
+  {
+    flag: '--package-json-path',
+    key: 'packageJsonPath',
+    parse: (value) => (value === 'false' ? false : value),
+  },
   { flag: '--lastmod-strategy', key: 'lastmodStrategy' },
   { flag: '--llms-md-mirror-style', key: 'llmsMdMirrorStyle' },
   { flag: '--sitemap-url', key: 'sitemapUrl' },
@@ -151,14 +188,21 @@ const CLI_ARG_DEFS = [
   { flag: '--no-generate-feed', key: 'generateFeed', value: false },
   { flag: '--no-hreflang-from-html', key: 'hreflangFromHtml', value: false },
   { flag: '--no-audit', key: 'audit', value: false },
+  { flag: '--no-verify', key: 'verify', value: false },
   { flag: '--no-debug', key: 'debug', value: false },
 ];
 
-function validateCliOptions(options) {
+function validateCliOptions(options, { requireReportForFile = true } = {}) {
+  if (options.verify !== undefined && typeof options.verify !== 'boolean') {
+    throw new Error("Option 'verify' must be a boolean.");
+  }
   if (options.report !== undefined && !REPORT_FORMATS.includes(options.report)) {
     throw new Error(`Invalid report format: ${options.report}. Use json or sarif.`);
   }
-  if (options.reportFile !== undefined && options.report === undefined) {
+  if (options.reportFile !== undefined && (typeof options.reportFile !== 'string' || !options.reportFile.trim())) {
+    throw new Error("Option 'reportFile' must be a non-empty string.");
+  }
+  if (requireReportForFile && options.reportFile !== undefined && options.report === undefined) {
     throw new Error('--report-file requires --report <json|sarif>.');
   }
   if (options.failOnAudit !== undefined && !FAIL_ON_AUDIT_VALUES.includes(options.failOnAudit)) {
@@ -173,6 +217,7 @@ export function parseCliArgs(argv = []) {
   const args = [...argv];
   const options = {};
   let command = 'generate';
+  let hasCommand = false;
   let showHelp = false;
 
   for (let i = 0; i < args.length; i += 1) {
@@ -184,17 +229,12 @@ export function parseCliArgs(argv = []) {
     }
 
     if (!arg.startsWith('-')) {
-      if (arg === 'generate' || arg === 'verify') {
+      if ((arg === 'generate' || arg === 'verify') && !hasCommand) {
         command = arg;
+        hasCommand = true;
         continue;
       }
-      throw new Error(`Unsupported command: ${arg}`);
-    }
-
-    // String paths that also accept the literal value "false".
-    if (arg === '--package-json-path=false') {
-      options.packageJsonPath = false;
-      continue;
+      throw new Error(hasCommand ? `Unexpected extra command: ${arg}` : `Unsupported command: ${arg}`);
     }
 
     // Table-driven argument matching
@@ -216,7 +256,7 @@ export function parseCliArgs(argv = []) {
         }
       } else {
         // String/list argument
-        const { value, nextIndex } = parseNonBooleanValue(args, i, def.flag);
+        const { value, nextIndex } = parseNonBooleanValue(args, i, def.flag, { allowEmpty: def.allowEmpty });
         options[def.key] = def.parse ? def.parse(value) : value;
         i = nextIndex;
       }
@@ -229,7 +269,7 @@ export function parseCliArgs(argv = []) {
     }
   }
 
-  validateCliOptions(options);
+  validateCliOptions(options, { requireReportForFile: options.config === undefined });
 
   return {
     command,
@@ -247,10 +287,13 @@ function resolvePathFromCwd(cwd, maybePath) {
 
 function resolveCliOptions(rawOptions = {}, cwd = process.cwd()) {
   const configOptions = rawOptions.config
-    ? JSON.parse(readFileSync(resolvePathFromCwd(cwd, rawOptions.config), 'utf-8'))
+    ? readJsonConfig(rawOptions.config, cwd)
     : {};
   const options = mergeConfigWithCliOptions(configOptions, rawOptions);
   delete options.config;
+
+  validateCliOptions(options, { requireReportForFile: true });
+  validateGeoOptions(options);
 
   if (options.sourceHtmlDir) {
     options.sourceHtmlDir = resolvePathFromCwd(cwd, options.sourceHtmlDir);
@@ -292,7 +335,7 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
   if (plan.report.totalHtmlFiles === 0) {
     logger.warn(
       '⚠️  No HTML files found in dist directory. '
-      + `distDir=${distDir} sourceHtmlDir=${options.sourceHtmlDir || 'src/pages'} `
+      + `distDir=${safeText(distDir)} sourceHtmlDir=${safeText(options.sourceHtmlDir || 'src/pages')} `
       + 'include=**/*.html',
     );
     return { distDir, generatedFiles: [], preservedFiles, plan };
@@ -300,12 +343,13 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
   if (plan.report.includedHtmlFiles === 0) {
     logger.warn(
       `⚠️  All ${plan.report.totalHtmlFiles} HTML file(s) were excluded by filters. `
-      + `Reasons: ${summarizeExcludedReasons(plan.report.excludedDetails) || 'unknown'}`,
+      + `Reasons: ${safeText(summarizeExcludedReasons(plan.report.excludedDetails) || 'unknown')}`,
     );
     return { distDir, generatedFiles: [], preservedFiles, plan };
   }
   (plan.report.routeConflicts || []).forEach(({ route, files, chosen }) => {
-    logger.warn(`⚠️  Route conflict for ${route}: ${files.join('、')}; kept ${chosen}.`);
+    const safeFiles = files.map((file) => safeText(file)).join('、');
+    logger.warn(`⚠️  Route conflict for ${safeText(route)}: ${safeFiles}; kept ${safeText(chosen)}.`);
   });
 
   try {
@@ -393,8 +437,8 @@ export async function runCli(argv = process.argv.slice(2), runtime = {}) {
       return 0;
     }
 
-    const options = parsed.options;
     const cwd = runtime.cwd || process.cwd();
+    const options = resolveCliOptions(parsed.options, cwd);
     const reportToStdout = Boolean(options.report) && !options.reportFile;
     const logger = reportToStdout ? createReportStdoutLogger(baseLogger) : baseLogger;
     const runtimeInfo = { ...runtime, logger };
@@ -412,6 +456,7 @@ export async function runCli(argv = process.argv.slice(2), runtime = {}) {
           generateResult = {
             distDir: resolvePathFromCwd(cwd, options.distDir || 'dist'),
             generatedFiles: [],
+            preservedFiles: error.plan.report?.preservedFiles || [],
             plan: error.plan,
           };
         } else {
@@ -430,6 +475,9 @@ export async function runCli(argv = process.argv.slice(2), runtime = {}) {
       const distDir = generateResult?.distDir
         || resolvePathFromCwd(cwd, options.distDir || 'dist');
       const audit = generateResult?.plan?.report?.audit;
+      const reportedGeneratedFiles = !generateError && (generateResult?.generatedFiles?.length || 0) > 0
+        ? (generateResult?.plan?.report?.generatedFiles || generateResult.generatedFiles)
+        : [];
       const report = options.report === 'sarif'
         ? createSarifReport({
             version: resolvePluginVersion(),
@@ -446,7 +494,9 @@ export async function runCli(argv = process.argv.slice(2), runtime = {}) {
             distDir,
             audit,
             verify: verification,
-            generatedFiles: generateResult?.generatedFiles || [],
+            generatedFiles: reportedGeneratedFiles,
+            preservedFiles: generateResult?.preservedFiles || [],
+            fileCompatibility: generateResult?.plan?.report?.fileCompatibility || null,
           });
       const written = writeReport({
         format: options.report,
@@ -455,7 +505,7 @@ export async function runCli(argv = process.argv.slice(2), runtime = {}) {
         stdout: runtime.stdout || process.stdout,
       });
       if (written.target === 'file') {
-        logger.log(`✅ Wrote ${options.report.toUpperCase()} report to ${written.filePath}`);
+        logger.log(`✅ Wrote ${options.report.toUpperCase()} report to ${safeText(written.filePath)}`);
       }
     }
 
@@ -467,7 +517,7 @@ export async function runCli(argv = process.argv.slice(2), runtime = {}) {
     }
     return 0;
   } catch (error) {
-    baseLogger.error(`❌ ${error.message}`);
+    baseLogger.error(`❌ ${sanitizeControlChars(error.message || String(error))}`);
     baseLogger.error('\nUse --help to view command usage.');
     return 1;
   }
@@ -487,10 +537,18 @@ function resolveExecutablePath(filePath) {
   }
 }
 
+function normalizeExecutablePath(filePath, platform = process.platform) {
+  if (!filePath) {
+    return null;
+  }
+  return platform === 'win32' ? filePath.toLowerCase() : filePath;
+}
+
 export function isCliEntrypoint({
   argv = process.argv,
   metaUrl = import.meta.url,
   importMetaMain = import.meta.main,
+  platform = process.platform,
 } = {}) {
   if (importMetaMain === true) {
     return true;
@@ -504,13 +562,22 @@ export function isCliEntrypoint({
     return false;
   }
 
-  return resolveExecutablePath(argvPath) === resolveExecutablePath(modulePath);
+  const resolvedModule = normalizeExecutablePath(resolveExecutablePath(modulePath), platform);
+  const candidates = [argvPath, `${argvPath}.js`, `${argvPath}.mjs`];
+  return candidates.some(
+    (candidate) => normalizeExecutablePath(resolveExecutablePath(candidate), platform) === resolvedModule,
+  );
 }
 
 const isDirectRun = isCliEntrypoint();
 
 if (isDirectRun) {
-  runCli().then((code) => {
-    process.exit(code);
-  });
+  runCli()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      console.error(`❌ ${sanitizeControlChars(error?.message || String(error))}`);
+      process.exitCode = 1;
+    });
 }

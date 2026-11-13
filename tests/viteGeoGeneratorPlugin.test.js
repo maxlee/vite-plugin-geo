@@ -81,6 +81,9 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
 
   it('prints the startup banner only when debug is enabled', () => {
     const manifest = JSON.parse(readFileSync(pluginManifestPath, 'utf-8'));
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.VITEST;
+    delete cleanEnv.VP_RESOLVING_CONFIG_METADATA;
     const result = spawnSync(
       'node',
       [
@@ -90,6 +93,7 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
       ],
       {
         cwd: process.cwd(),
+        env: cleanEnv,
         encoding: 'utf-8',
       },
     );
@@ -100,6 +104,33 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     expect(logs[0]).toContain(`vite-plugin-geo v${manifest.version}`);
     expect(logs[1]).toContain('Defaults:');
     expect(logs[2]).toContain('Enabled options:');
+  });
+
+  it.each([
+    ['VP_RESOLVING_CONFIG_METADATA', '1'],
+    ['VITEST', 'true'],
+  ])('suppresses the startup banner when %s=%s', (envKey, envValue) => {
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.VITEST;
+    delete cleanEnv.VP_RESOLVING_CONFIG_METADATA;
+    cleanEnv[envKey] = envValue;
+
+    const result = spawnSync(
+      'node',
+      [
+        '--input-type=module',
+        '-e',
+        `import(${JSON.stringify(pluginSourceUrl)}).then(({ createGeoGeneratorPlugin }) => { const logs = []; const originalLog = console.log; console.log = (...args) => logs.push(args.join(' ')); try { createGeoGeneratorPlugin({ debug: true }); } finally { console.log = originalLog; } process.stdout.write(JSON.stringify(logs)); })`,
+      ],
+      {
+        cwd: process.cwd(),
+        env: cleanEnv,
+        encoding: 'utf-8',
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([]);
   });
 
   it('records Vite and Rolldown versions from plugin context in debug mode', () => {
@@ -510,5 +541,305 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
 
     expect(warnings.filter((message) => message.includes('vite-plugin-geo/astro'))).toHaveLength(1);
     expect(warnings.some((message) => message.includes('No HTML pages were found'))).toBe(true);
+  });
+
+  it('decodes Uint8Array HTML and XML assets as UTF-8 instead of byte strings', async () => {
+    const distDir = join(fixtureRoot, 'dist');
+    ensureDir(distDir);
+    const encoder = new TextEncoder();
+    const htmlSource = encoder.encode(
+      '<!doctype html><html lang="en"><head><title>Binary HTML</title><meta name="description" content="UTF-8 bytes"></head><body><h1>Binary</h1></body></html>',
+    );
+    const existingSitemap = Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/</loc></url></urlset>',
+      'utf-8',
+    );
+    const plugin = createGeoGeneratorPlugin({
+      domain: 'https://example.com',
+      packageJsonPath: false,
+      llmsMdMirror: false,
+      generateFeed: false,
+      audit: false,
+    });
+    plugin.configResolved({
+      root: fixtureRoot,
+      base: '',
+      build: { outDir: 'dist' },
+    });
+
+    const emitted = [];
+    const bundle = {
+      'index.html': {
+        type: 'asset',
+        fileName: 'index.html',
+        source: htmlSource,
+      },
+      'custom-sitemap.xml': {
+        type: 'asset',
+        fileName: 'custom-sitemap.xml',
+        source: existingSitemap,
+      },
+    };
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    console.log = () => {};
+    console.warn = () => {};
+    try {
+      await plugin.generateBundle.handler.call(
+        { emitFile(file) { emitted.push(file); } },
+        { dir: distDir },
+        bundle,
+      );
+    } finally {
+      console.log = originalLog;
+      console.warn = originalWarn;
+    }
+
+    expect(emitted.map(({ fileName }) => fileName)).not.toContain('sitemap.xml');
+    const llms = emitted.find(({ fileName }) => fileName === 'llms.txt')?.source;
+    expect(llms).toContain('# Binary HTML');
+    expect(llms).toContain('> UTF-8 bytes');
+    expect(llms).toContain('[Sitemap](https://example.com/custom-sitemap.xml)');
+    expect(bundle['index.html'].source).toContain('llms.txt');
+  });
+
+  it('uses active Environment API config and skips server environments only in multi-env builds', async () => {
+    const wrongRoot = join(fixtureRoot, 'wrong');
+    const activeRoot = join(fixtureRoot, 'active');
+    const distDir = join(activeRoot, 'dist');
+    ensureDir(wrongRoot);
+    ensureDir(distDir);
+
+    const plugin = createGeoGeneratorPlugin({
+      domain: 'https://example.com',
+      packageJsonPath: false,
+      llmsMdMirror: false,
+      generateFeed: false,
+      audit: false,
+    });
+    const staleConfig = {
+      root: wrongRoot,
+      base: '/stale/',
+      build: { outDir: 'dist', ssr: false },
+    };
+    const clientConfig = {
+      root: activeRoot,
+      base: '/docs/',
+      consumer: 'client',
+      build: { outDir: 'dist', ssr: false },
+    };
+    const ssrConfig = {
+      root: activeRoot,
+      base: '/docs/',
+      consumer: 'server',
+      build: { outDir: 'dist-ssr', ssr: true },
+    };
+    const topConfig = {
+      environments: {
+        client: clientConfig,
+        ssr: ssrConfig,
+      },
+    };
+
+    expect(plugin.applyToEnvironment({
+      config: clientConfig,
+      getTopLevelConfig: () => topConfig,
+    })).toBe(true);
+    expect(plugin.applyToEnvironment({
+      config: ssrConfig,
+      getTopLevelConfig: () => topConfig,
+    })).toBe(false);
+    expect(plugin.applyToEnvironment({
+      config: { consumer: 'server', build: { ssr: 'src/entry.js' } },
+      getTopLevelConfig: () => ({
+        environments: {
+          client: { consumer: 'client', build: { ssr: 'src/entry.js' } },
+          ssr: { consumer: 'server', build: { ssr: 'src/entry.js' } },
+        },
+      }),
+    })).toBe(true);
+
+    plugin.configResolved(staleConfig);
+
+    const emitted = [];
+    const warnings = [];
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    console.log = () => {};
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      await plugin.generateBundle.handler.call(
+        {
+          environment: {
+            name: 'ssr',
+            config: ssrConfig,
+            getTopLevelConfig: () => topConfig,
+          },
+          emitFile(file) { emitted.push(file); },
+        },
+        {},
+        {},
+      );
+      expect(warnings).toEqual([]);
+      expect(emitted).toEqual([]);
+
+      await plugin.generateBundle.handler.call(
+        {
+          environment: {
+            name: 'client',
+            config: clientConfig,
+            getTopLevelConfig: () => topConfig,
+          },
+          emitFile(file) { emitted.push(file); },
+        },
+        { dir: distDir },
+        {
+          'index.html': {
+            type: 'asset',
+            fileName: 'index.html',
+            source: '<html><head><title>Env Home</title></head><body>Home</body></html>',
+          },
+        },
+      );
+    } finally {
+      console.log = originalLog;
+      console.warn = originalWarn;
+    }
+
+    expect(emitted.find(({ fileName }) => fileName === 'sitemap.xml')?.source)
+      .toContain('<loc>https://example.com/docs</loc>');
+
+    // Single-environment SSR builds still surface an explanatory warning when misconfigured.
+    const singleSsrPlugin = createGeoGeneratorPlugin({
+      domain: 'https://example.com',
+      packageJsonPath: false,
+      audit: false,
+    });
+    singleSsrPlugin.configResolved({
+      root: activeRoot,
+      base: '/',
+      consumer: 'server',
+      build: { outDir: 'dist-ssr', ssr: 'src/entry.js' },
+    });
+    const singleSsrWarnings = [];
+    const origWarn2 = console.warn;
+    console.warn = (...args) => singleSsrWarnings.push(args.join(' '));
+    try {
+      await singleSsrPlugin.generateBundle.handler.call({ emitFile() {} }, {}, {});
+    } finally {
+      console.warn = origWarn2;
+    }
+    expect(singleSsrWarnings.some((msg) => msg.includes('buildShape=SSR'))).toBe(true);
+    expect(singleSsrWarnings.some((msg) => msg.includes('SSR builds do not emit static HTML'))).toBe(true);
+  });
+
+  it('uses originalFileNames within projectRoot for lastmod and ignores paths outside projectRoot', async () => {
+    const { utimesSync } = await import('fs');
+    const distDir = join(fixtureRoot, 'dist');
+    const outsideDir = join(fixtureRoot, '..', '__vite-geo-outside-lastmod__');
+    ensureDir(distDir);
+    ensureDir(outsideDir);
+    const inRootSource = writeFixtureFile('landing.html', '<html><head><title>Landing</title></head><body>Landing</body></html>');
+    const outsideSource = join(outsideDir, 'secret.html');
+    writeFileSync(outsideSource, '<html><head><title>Outside</title></head><body>Outside</body></html>', 'utf-8');
+    const mtime = new Date('2025-05-06T07:08:09.000Z');
+    utimesSync(inRootSource, mtime, mtime);
+    utimesSync(outsideSource, mtime, mtime);
+
+    try {
+      const plugin = createGeoGeneratorPlugin({
+        domain: 'https://example.com',
+        packageJsonPath: false,
+        lastmodStrategy: 'file-mtime',
+        llmsMdMirror: false,
+        generateFeed: false,
+        audit: false,
+      });
+      plugin.configResolved({
+        root: fixtureRoot,
+        base: '',
+        build: { outDir: 'dist' },
+      });
+
+      const emitted = [];
+      const originalLog = console.log;
+      const originalWarn = console.warn;
+      console.log = () => {};
+      console.warn = () => {};
+      try {
+        await plugin.generateBundle.handler.call(
+          { emitFile(file) { emitted.push(file); } },
+          { dir: distDir },
+          {
+            'index.html': {
+              type: 'asset',
+              fileName: 'index.html',
+              originalFileNames: [inRootSource],
+              source: '<html><head><title>Landing</title></head><body>Landing</body></html>',
+            },
+            'outside.html': {
+              type: 'asset',
+              fileName: 'outside.html',
+              originalFileNames: [outsideSource],
+              source: '<html><head><title>Outside</title></head><body>Outside</body></html>',
+            },
+          },
+        );
+      } finally {
+        console.log = originalLog;
+        console.warn = originalWarn;
+      }
+
+      const sitemap = emitted.find(({ fileName }) => fileName === 'sitemap.xml')?.source || '';
+      expect(sitemap).toContain('<lastmod>2025-05-06T07:08:09.000Z</lastmod>');
+      expect(sitemap.match(/<lastmod>/g)).toHaveLength(1);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects Astro via astro Vite plugins in monorepos without local astro dependency', async () => {
+    ensureDir(join(fixtureRoot, 'dist'));
+    writeFixtureFile('package.json', JSON.stringify({ name: 'monorepo-app' }));
+
+    const plugin = createGeoGeneratorPlugin({
+      domain: 'https://example.com',
+      audit: false,
+    });
+    const clientConfig = {
+      root: fixtureRoot,
+      base: '',
+      consumer: 'client',
+      build: { outDir: 'dist', ssr: true },
+      plugins: [{ name: 'astro:build' }],
+    };
+    plugin.configResolved(clientConfig);
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      await plugin.generateBundle.handler.call(
+        {
+          environment: {
+            name: 'client',
+            config: clientConfig,
+            getTopLevelConfig: () => ({
+              environments: {
+                client: clientConfig,
+                prerender: { consumer: 'server', build: { ssr: true } },
+              },
+            }),
+          },
+          emitFile() {},
+        },
+        {},
+        {},
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(warnings.filter((message) => message.includes('vite-plugin-geo/astro'))).toHaveLength(1);
   });
 });

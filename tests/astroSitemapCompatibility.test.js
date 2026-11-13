@@ -81,6 +81,23 @@ describe('Astro sitemap compatibility detection', () => {
     expect(result.sitemapUrl).toBe('sitemap.xml');
     expect(result.shouldGenerateSitemap).toBe(true);
   });
+
+  it('sorts candidate sitemaps deterministically by code unit and recognizes uppercase XML extensions', () => {
+    writeFileSync(
+      join(distDir, 'a-sitemap.xml'),
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>',
+    );
+    writeFileSync(
+      join(distDir, 'Z-sitemap.XML'),
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>',
+    );
+
+    const result = resolveAstroSitemapCompatibility(fixtureRoot);
+
+    expect(result.detected).toBe(true);
+    expect(result.sitemapUrl).toBe('Z-sitemap.XML');
+    expect(result.shouldGenerateSitemap).toBe(false);
+  });
 });
 
 describe('generated sitemap URL resolution', () => {

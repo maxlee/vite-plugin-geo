@@ -20,16 +20,44 @@ export interface LlmsPageInfo {
   isHome: boolean;
 }
 
+export interface GeoHreflangEntry {
+  hreflang: string;
+  href: string;
+}
+
+export interface GeoAuditFacts {
+  titles: string[];
+  descriptions: string[];
+  lang: string;
+  h1Count: number;
+  canonicals: string[];
+  baseHref: string | null;
+  jsonLd: string[];
+  missingAlt: number;
+  anchors: Array<{ href: string; download: boolean }>;
+  links: Array<{ rel: string; type: string; href: string; hreflang: string }>;
+}
+
 export interface GeoPageModel {
   filePath: string;
   relativePath: string;
   pagePath: string;
   pageUrl: string;
+  filePageUrl: string;
+  htmlContent: string;
   title: string;
   description: string;
   lang: string;
   noindex: boolean;
+  hreflang: GeoHreflangEntry[];
+  documentBaseUrl: string;
+  markdown: string;
   mtime: string | null;
+  audit?: GeoAuditFacts;
+  excludeReason?: string;
+  mirrorRelativePath?: string;
+  markdownUrl?: string | null;
+  hasExistingMarkdownAlternate?: boolean;
 }
 
 export interface SkuMdOptions {
@@ -140,6 +168,20 @@ export interface VerifyGeoOutputOptions {
 
 export function verifyGeoOutput(params: VerifyGeoOutputOptions): GeoVerifyResult;
 
+export interface GeoFileCompatibilityDecision {
+  filename: string;
+  decision: 'preserve' | 'overwrite';
+}
+
+export interface GeoFileCompatibility {
+  policy: FileConflict;
+  decisions: GeoFileCompatibilityDecision[];
+}
+
+export interface ReportWritableStream {
+  write(chunk: string): unknown;
+}
+
 export interface GeoJsonReport {
   schemaVersion: '1.0';
   tool: { name: string; version: string };
@@ -158,33 +200,37 @@ export interface GeoJsonReport {
   } | null;
   audit: GeoAuditReport | null;
   generatedFiles: Array<{ filename: string; size?: number }>;
+  preservedFiles: string[];
+  fileCompatibility: GeoFileCompatibility | null;
 }
 
 export interface WriteReportOptions {
   format: ReportFormat;
   filePath?: string | null;
   report: GeoJsonReport | Record<string, unknown>;
-  stdout?: NodeJS.WritableStream;
+  stdout?: ReportWritableStream;
 }
 
-export function createJsonReport(params: {
+export function createJsonReport(params?: {
   command?: 'generate' | 'verify';
   version?: string;
-  siteUrl?: string;
+  siteUrl?: string | null;
   routeBasePath?: string;
-  distDir?: string;
-  audit?: GeoAuditReport;
-  verify?: GeoVerifyResult;
-  generatedFiles?: Array<string | { filename: string; size?: number }>;
-  generatedAt?: string;
+  distDir?: string | null;
+  audit?: GeoAuditReport | null;
+  verify?: GeoVerifyResult | null;
+  generatedFiles?: Array<string | { filename: string; size?: number }> | null;
+  preservedFiles?: string[] | null;
+  fileCompatibility?: GeoFileCompatibility | null;
+  generatedAt?: string | null;
 }): GeoJsonReport;
 
-export function createSarifReport(params: {
+export function createSarifReport(params?: {
   version?: string;
-  audit?: GeoAuditReport;
-  verify?: GeoVerifyResult;
-  projectRoot?: string;
-  distDir?: string;
+  audit?: GeoAuditReport | null;
+  verify?: GeoVerifyResult | null;
+  projectRoot?: string | null;
+  distDir?: string | null;
 }): Record<string, unknown>;
 
 export function writeReport(params: WriteReportOptions): {

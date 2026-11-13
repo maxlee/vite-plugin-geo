@@ -103,4 +103,37 @@ describe('llms.txt and Markdown generation', () => {
     const description = result.split('\n').find((line) => line.includes('[Guide]')).split(': ').at(-1);
     expect(description.length).toBeLessThanOrEqual(80);
   });
+
+  it('preserves whitespace inside fenced code blocks during HTML->Markdown conversion', () => {
+    const markdown = convertHtmlToMarkdown(
+      '<main><pre><code>const a = 1;  \n\n\n  const b = 2;  </code></pre></main>',
+    );
+    expect(markdown).toContain('const a = 1;  \n\n\n  const b = 2;');
+  });
+
+  it('sanitizes control characters, escapes Markdown links, and truncates safely by code point', () => {
+    const filePath = join(testDir, 'doc.html');
+    const emojiDesc = `${'A'.repeat(76)}😀${'B'.repeat(20)}`;
+    writeFileSync(
+      filePath,
+      `<html><head><title>Doc [v2]\nInjected</title><meta name="description" content="${emojiDesc}"></head></html>`,
+    );
+
+    const result = generateLlmsTxt(
+      { url: 'https://example.com', title: 'Site\n## FakeHeading', description: 'Line1\nLine2' },
+      [filePath],
+      testDir,
+      {
+        llmsMdMirror: false,
+        skuMd: { catalog: [{ label: 'Store [EU]', url: 'https://example.com/shop(1)' }] },
+      },
+    );
+
+    expect(result).toContain('# Site ## FakeHeading');
+    expect(result).toContain('> Line1 Line2');
+    expect(result).toContain('- [Doc \\[v2\\] Injected](https://example.com/doc): ');
+    expect(result).toContain('- [Store \\[EU\\]](https://example.com/shop%281%29):');
+    expect(result).not.toMatch(/\uFFFD/);
+    expect(result).toContain(`${'A'.repeat(76)}😀...`);
+  });
 });

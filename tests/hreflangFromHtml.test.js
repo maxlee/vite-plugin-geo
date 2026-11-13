@@ -128,4 +128,19 @@ describe('hreflangFromHtml', () => {
     expect(sitemap).toContain('hreflang="en" href="https://example.test/en"');
     expect(sitemap).toContain('hreflang="x-default" href="https://example.test/en"');
   });
+
+  it('resolves relative hreflang links against nested index directories and deduplicates tag casing', async () => {
+    const f = fixture({
+      'docs/index.html': html('en', 'Docs', [
+        { hreflang: 'fr', href: 'fr/' },
+        { hreflang: 'EN-US', href: 'https://example.test/docs' },
+        { hreflang: 'en-us', href: 'https://example.test/docs/dup' },
+      ]),
+    });
+    const sitemap = sitemapOf(await planFor(f, { hreflangFromHtml: true }));
+
+    expect(sitemap).toContain('hreflang="fr" href="https://example.test/docs/fr/"');
+    expect(sitemap).toContain('hreflang="EN-US" href="https://example.test/docs"');
+    expect(sitemap).not.toContain('href="https://example.test/docs/dup"');
+  });
 });

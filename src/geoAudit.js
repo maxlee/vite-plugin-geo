@@ -1,3 +1,5 @@
+import { compareCodeUnits, isValidLanguageTag } from './geoGenerator.js';
+
 /** Read-only diagnostics for the current static build; no network or HTML reparsing. */
 export function collectAuditFacts(documentAst, { discoveryOnly = false } = {}) {
   const facts = { titles: [], descriptions: [], lang: '', h1Count: 0, canonicals: [], baseHref: null, jsonLd: [], missingAlt: 0, anchors: [], links: [] };
@@ -28,7 +30,6 @@ export function collectAuditFacts(documentAst, { discoveryOnly = false } = {}) {
 
 const tokens = (value) => String(value || '').toLowerCase().split(/\s+/).filter(Boolean);
 const normalize = (value) => String(value || '').trim().replace(/\s+/g, ' ');
-const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function httpUrl(value, base) {
   try {
     const url = new URL(value, base);
@@ -36,6 +37,9 @@ function httpUrl(value, base) {
   } catch { return null; }
 }
 function key(url) { return `${url.origin}${url.pathname}`; }
+function stripTrailingSlash(pathname) {
+  return pathname !== '/' && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+}
 function documentBase(facts, pageUrl) {
   try { return new URL(facts.baseHref ?? pageUrl, pageUrl).href; } catch { return pageUrl; }
 }
@@ -43,9 +47,32 @@ function publicUrl(siteUrl, path, routeBasePath = '') {
   const route = routeBasePath === './' ? '' : routeBasePath.replace(/^\/+|\/+$/g, '');
   return new URL([route, path.replace(/^\/+/, '')].filter(Boolean).join('/'), `${siteUrl.replace(/\/+$/, '')}/`);
 }
-function validLang(value) {
-  if (!/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(value)) return false;
-  try { return Intl.getCanonicalLocales(value).length === 1; } catch { return false; }
+function pageUrlAliases(page, siteUrl, routeBasePath = '') {
+  const fileUrl = page.filePageUrl || publicUrl(siteUrl, page.relativePath, routeBasePath).href;
+  const aliases = [page.pageUrl, fileUrl];
+  if (/(^|\/)index\.html?$/i.test(page.relativePath)) {
+    const directory = /index\.html?$/i.test(fileUrl)
+      ? fileUrl.replace(/index\.html?$/i, '')
+      : `${fileUrl.replace(/\/$/, '')}/`;
+    aliases.push(directory, directory.replace(/\/$/, ''), `${directory}index.html`);
+  }
+  return aliases;
+}
+function canonicalMatchesPage(canonicalUrl, page, options = {}) {
+  const expected = httpUrl(page.pageUrl);
+  if (!expected) return false;
+  if (canonicalUrl.origin !== expected.origin || canonicalUrl.search !== expected.search) {
+    return false;
+  }
+  const normalizedCanonical = stripTrailingSlash(canonicalUrl.pathname);
+  if (normalizedCanonical === stripTrailingSlash(expected.pathname)) {
+    return true;
+  }
+  if (options.prettyUrls === false && /(^|\/)index\.html?$/i.test(expected.pathname)) {
+    const directoryPathname = expected.pathname.replace(/index\.html?$/i, '') || '/';
+    return normalizedCanonical === stripTrailingSlash(directoryPathname);
+  }
+  return false;
 }
 
 const HTML_EXTENSION_LINK = /^[^?#]*\.html?([?#]|$)/i;
@@ -67,13 +94,10 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
   const routeRoot = publicUrl(siteUrl, '', options.routeBasePath || '');
   const targets = new Map();
   for (const page of allPages) {
-    const fileUrl = page.filePageUrl || publicUrl(siteUrl, page.relativePath, options.routeBasePath || '').href;
-    const aliases = [page.pageUrl, fileUrl];
-    if (/(^|\/)index\.html?$/i.test(page.relativePath)) {
-      const directory = /index\.html?$/i.test(fileUrl) ? fileUrl.replace(/index\.html?$/i, '') : `${fileUrl.replace(/\/$/, '')}/`;
-      aliases.push(directory, directory.replace(/\/$/, ''), `${directory}index.html`);
+    for (const alias of pageUrlAliases(page, siteUrl, options.routeBasePath || '')) {
+      const url = httpUrl(alias);
+      if (url) targets.set(key(url), page);
     }
-    for (const alias of aliases) { const url = httpUrl(alias); if (url) targets.set(key(url), page); }
   }
   const plannedFiles = new Set([...files, ...existingFiles].map(({ filename }) => key(publicUrl(siteUrl, filename, options.routeBasePath || ''))));
   const inScope = (url) => url.origin === routeRoot.origin && (url.pathname === routeRoot.pathname.replace(/\/$/, '') || url.pathname.startsWith(routeRoot.pathname.endsWith('/') ? routeRoot.pathname : `${routeRoot.pathname}/`));
@@ -109,7 +133,7 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
       }
     }
     if (!normalize(facts.lang)) add(page, 'lang-missing', 'warning', '缺少 html lang', '填写页面实际使用的语言标签。');
-    else if (!validLang(facts.lang)) add(page, 'lang-invalid', 'warning', `无法识别的语言标签：${facts.lang}`, '使用有效的 BCP 47 语言标签。');
+    else if (!isValidLanguageTag(facts.lang)) add(page, 'lang-invalid', 'warning', `无法识别的语言标签：${facts.lang}`, '使用有效的 BCP 47 语言标签。');
     if (!facts.h1Count) add(page, 'h1-missing', 'advice', '缺少 H1', '为主要内容提供明确的一级标题。');
     else if (facts.h1Count > 1) add(page, 'h1-multiple', 'advice', `发现 ${facts.h1Count} 个 H1`, '确认页面的标题层级。');
     if (facts.missingAlt) add(page, 'image-alt-missing', 'advice', `${facts.missingAlt} 张图片缺少 alt 属性`, '提供图片说明；装饰图片可使用空 alt。');
@@ -126,10 +150,10 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
       canonicalUrls.add(url.href);
       if (!/^https?:\/\//i.test(href)) add(page, 'canonical-relative', 'advice', `canonical 使用相对地址：${href}`, '考虑使用绝对地址以避免基准地址歧义。');
       if (url.origin !== new URL(page.pageUrl).origin) add(page, 'canonical-cross-origin', 'advice', `canonical 指向其他来源：${href}`, '确认跨站首选地址符合预期。');
-      if (sitemapGenerated && url.href !== new URL(page.pageUrl).href) add(page, 'canonical-sitemap-mismatch', url.origin === new URL(page.pageUrl).origin ? 'warning' : 'advice', `canonical ${url.href} 与本次 sitemap 页面地址 ${page.pageUrl} 不一致`, '统一首选地址与 sitemap 中的地址。');
+      if (sitemapGenerated && !canonicalMatchesPage(url, page, options)) add(page, 'canonical-sitemap-mismatch', url.origin === new URL(page.pageUrl).origin ? 'warning' : 'advice', `canonical ${url.href} 与本次 sitemap 页面地址 ${page.pageUrl} 不一致`, '统一首选地址与 sitemap 中的地址。');
       checkTarget(page, href, base, 'canonical');
     }
-    if (canonicalUrls.size > 1) add(page, 'canonical-conflict', 'warning', `存在不同 canonical：${[...canonicalUrls].sort(compare).join('、')}`, '仅保留一个首选地址。');
+    if (canonicalUrls.size > 1) add(page, 'canonical-conflict', 'warning', `存在不同 canonical：${[...canonicalUrls].sort(compareCodeUnits).join('、')}`, '仅保留一个首选地址。');
     const prefixes = routePrefixes(options);
     const checkMirrorPath = (href, label) => {
       const url = httpUrl(href, base);
@@ -161,11 +185,18 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
     }
     for (const anchor of facts.anchors || []) if (!anchor.download) checkTarget(page, anchor.href, base, 'anchor', true);
     for (const link of facts.links || []) if (link.hreflang && tokens(link.rel).includes('alternate')) checkTarget(page, link.href, base, 'hreflang');
-    for (const pattern of Object.values(options.hreflang || {})) {
-      if (typeof pattern !== 'string') continue;
-      const href = pattern.replace('{path}', page.pagePath ?? '');
-      const resolved = /^https?:\/\//.test(href) ? href : `${siteUrl.replace(/\/$/, '')}/${href.replace(/^\//, '')}`;
-      checkTarget(page, resolved, page.pageUrl, 'hreflang');
+    if (!options.hreflangFromHtml) {
+      for (const pattern of Object.values(options.hreflang || {})) {
+        if (typeof pattern !== 'string') continue;
+        const href = pattern.replaceAll('{path}', page.pagePath ?? '');
+        if (!/^https?:\/\//i.test(href) && (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith('//'))) {
+          continue;
+        }
+        const resolved = /^https?:\/\//i.test(href)
+          ? href
+          : `${siteUrl.replace(/\/$/, '')}/${href.replace(/^\//, '')}`;
+        checkTarget(page, resolved, page.pageUrl, 'hreflang');
+      }
     }
     const finalFacts = (discoveryByPath instanceof Map ? discoveryByPath.get(page.relativePath) : discoveryByPath[page.relativePath]) || facts;
     const finalBase = documentBase(finalFacts, page.filePageUrl || page.pageUrl);
@@ -189,10 +220,12 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
   // Cross-page rules: inbound links (orphans) and hreflang reciprocity.
   const inbound = new Map();
   const declarations = new Map();
-  const aliasKeys = (page) => [page.pageUrl, page.filePageUrl]
-    .filter(Boolean)
-    .map((value) => { const url = httpUrl(value); return url ? key(url) : null; })
-    .filter(Boolean);
+  const aliasKeys = (page) => [...new Set(
+    pageUrlAliases(page, siteUrl, options.routeBasePath || '')
+      .filter(Boolean)
+      .map((value) => { const url = httpUrl(value); return url ? key(url) : null; })
+      .filter(Boolean),
+  )];
 
   for (const page of pages) {
     const facts = page.audit || {};
@@ -241,9 +274,9 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
     }
   }
 
-  for (const [rule, groups, severity] of [['title-duplicate', titleGroups, 'warning'], ['description-duplicate', descriptionGroups, 'advice']]) for (const [value, group] of groups) if (group.length > 1) for (const page of group) add(page, rule, severity, `内容重复「${value}」：${group.map((entry) => entry.relativePath).sort(compare).join('、')}`, '为不同页面提供能区分内容的说明。');
+  for (const [rule, groups, severity] of [['title-duplicate', titleGroups, 'warning'], ['description-duplicate', descriptionGroups, 'advice']]) for (const [value, group] of groups) if (group.length > 1) for (const page of group) add(page, rule, severity, `内容重复「${value}」：${group.map((entry) => entry.relativePath).sort(compareCodeUnits).join('、')}`, '为不同页面提供能区分内容的说明。');
   const unique = [...new Map(diagnostics.map((item) => [JSON.stringify(item), item])).values()];
-  unique.sort((a, b) => compare(a.path, b.path) || compare(a.rule, b.rule) || compare(a.evidence, b.evidence));
+  unique.sort((a, b) => compareCodeUnits(a.path, b.path) || compareCodeUnits(a.rule, b.rule) || compareCodeUnits(a.evidence, b.evidence));
   return { checkedPages: pages.length, diagnostics: unique };
 }
 

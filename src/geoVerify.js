@@ -9,14 +9,19 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import { parse } from 'parse5';
 import { collectAuditFacts } from './geoAudit.js';
+import { validateGeoOptions } from './geoBuildPipeline.js';
 import {
   classifyHtmlFiles,
+  compareCodeUnits,
   composePageUrl,
+  decodeXmlEntities,
   findHtmlFiles,
+  isWithinDir,
   normalizeFilePath,
   normalizeRouteBasePath,
   resolveMarkdownMirrorPath,
   resolvePagePath,
+  resolvePagePathConflicts,
 } from './geoGenerator.js';
 import { normalizeSiteDomain } from './geoMetadataResolver.js';
 
@@ -35,6 +40,16 @@ function fileExists(filePath) {
   }
 }
 
+function safeDistFilePath(distDir, relativePath) {
+  const normalized = normalizeFilePath(relativePath).replace(/^\/+/, '');
+  if (!normalized) return null;
+  if (normalized.split('/').some((segment) => segment === '..')) {
+    return null;
+  }
+  const resolvedPath = resolve(distDir, normalized);
+  return isWithinDir(distDir, resolvedPath) ? resolvedPath : null;
+}
+
 function readText(filePath) {
   try {
     return readFileSync(filePath, 'utf-8');
@@ -43,27 +58,35 @@ function readText(filePath) {
   }
 }
 
-function decodeXmlEntities(value) {
-  return String(value)
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (match, code) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([\da-f]+);/gi, (match, code) => String.fromCodePoint(Number.parseInt(code, 16)))
-    .replace(/&amp;/g, '&')
-    .trim();
+function stripXmlCommentsOutsideCdata(xml) {
+  return String(xml || '').replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g, (match) => (
+    match.startsWith('<![CDATA[') ? match : ''
+  ));
+}
+
+function unwrapXmlValue(value) {
+  const str = String(value || '');
+  let result = '';
+  let lastIndex = 0;
+  const cdataPattern = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
+  let match;
+  while ((match = cdataPattern.exec(str)) !== null) {
+    result += decodeXmlEntities(str.slice(lastIndex, match.index));
+    result += match[1];
+    lastIndex = match.index + match[0].length;
+  }
+  result += decodeXmlEntities(str.slice(lastIndex));
+  return result.trim();
 }
 
 function parseSitemapXml(content) {
-  const source = String(content || '');
-  const isIndex = /<sitemapindex\b/i.test(source);
+  const source = stripXmlCommentsOutsideCdata(content);
+  const isIndex = /<(?:[a-zA-Z_][\w.-]*:)?sitemapindex\b/i.test(source);
   const locs = [];
-  const pattern = /<loc>\s*([\s\S]*?)\s*<\/loc>/gi;
+  const pattern = /<(?:[a-zA-Z_][\w.-]*:)?loc(?:\s[^>]*)?>\s*([\s\S]*?)\s*<\/(?:[a-zA-Z_][\w.-]*:)?loc>/gi;
   let match;
   while ((match = pattern.exec(source)) !== null) {
-    const loc = decodeXmlEntities(match[1]);
+    const loc = unwrapXmlValue(match[1]);
     if (loc) locs.push(loc);
   }
   return { isIndex, locs };
@@ -71,10 +94,39 @@ function parseSitemapXml(content) {
 
 function listTopLevelSitemaps(distDir) {
   try {
-    return readdirSync(distDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && /^sitemap.*\.xml$/i.test(entry.name))
+    const xmlFiles = readdirSync(distDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.xml$/i.test(entry.name))
       .map((entry) => entry.name)
-      .sort((a, b) => a.localeCompare(b));
+      .sort(compareCodeUnits);
+
+    const candidates = [];
+    for (const name of xmlFiles) {
+      const content = readText(join(distDir, name));
+      const cleaned = stripXmlCommentsOutsideCdata(content || '');
+      const isIndex = /<(?:[a-zA-Z_][\w.-]*:)?sitemapindex\b/i.test(cleaned);
+      const isUrlset = /<(?:[a-zA-Z_][\w.-]*:)?urlset\b/i.test(cleaned);
+      const isNamedSitemap = /^sitemap.*\.xml$/i.test(name);
+      if (!isIndex && !isUrlset && !isNamedSitemap) continue;
+      candidates.push({ name, isIndex, isUrlset });
+    }
+
+    const rank = (entry) => {
+      if (entry.isIndex) {
+        if (entry.name === 'sitemap_index.xml') return 0;
+        if (entry.name === 'sitemap-index.xml') return 1;
+        if (entry.name === 'sitemap.xml') return 2;
+        return 3;
+      }
+      if (entry.name === 'sitemap.xml') return 4;
+      if (entry.name === 'sitemap_index.xml') return 5;
+      if (entry.name === 'sitemap-index.xml') return 6;
+      if (entry.isUrlset) return 7;
+      return 8;
+    };
+
+    return candidates
+      .sort((a, b) => rank(a) - rank(b) || compareCodeUnits(a.name, b.name))
+      .map((entry) => entry.name);
   } catch {
     return [];
   }
@@ -120,8 +172,8 @@ function toDistRelative(value, { siteUrl, routeBasePath }) {
 }
 
 /**
- * Normalize a URL for comparison: origin + pathname without a trailing slash.
- * The site root keeps its single slash so it matches composePageUrl output.
+ * Normalize a URL for comparison: origin + pathname (without trailing slash except root) + search.
+ * Preserves query strings so query-distinct canonicals do not collapse into the base path.
  */
 function normalizeUrlKey(value, siteUrl) {
   try {
@@ -129,7 +181,7 @@ function normalizeUrlKey(value, siteUrl) {
     if (!/^https?:$/.test(url.protocol)) return null;
     let pathname = url.pathname;
     if (pathname !== '/' && pathname.endsWith('/')) pathname = pathname.slice(0, -1);
-    return `${url.origin}${pathname}`;
+    return `${url.origin}${pathname}${url.search}`;
   } catch {
     return null;
   }
@@ -153,7 +205,8 @@ function resolveArtifactFile(distDir, relativePath, stripPrefixes = []) {
   const candidates = [...baseCandidates, ...prefixedCandidates];
 
   for (const candidate of candidates) {
-    if (fileExists(join(distDir, candidate))) return normalizeFilePath(candidate);
+    const safePath = safeDistFilePath(distDir, candidate);
+    if (safePath && fileExists(safePath)) return normalizeFilePath(candidate);
   }
   return null;
 }
@@ -163,13 +216,19 @@ function collectSitemapLocs(distDir, rootFile, context) {
   const files = [];
   const locs = [];
   const missing = [];
+  const depthExceeded = [];
 
   const visit = (file, depth) => {
     const normalizedFile = normalizeFilePath(file);
-    if (!normalizedFile || visited.has(normalizedFile) || depth > SITEMAP_INDEX_MAX_DEPTH) return;
+    if (!normalizedFile || visited.has(normalizedFile)) return;
+    if (depth > SITEMAP_INDEX_MAX_DEPTH) {
+      depthExceeded.push(normalizedFile);
+      return;
+    }
     visited.add(normalizedFile);
 
-    const content = readText(join(distDir, normalizedFile));
+    const resolvedPath = safeDistFilePath(distDir, normalizedFile);
+    const content = resolvedPath ? readText(resolvedPath) : null;
     if (content === null) {
       missing.push(normalizedFile);
       return;
@@ -183,7 +242,7 @@ function collectSitemapLocs(distDir, rootFile, context) {
     }
     for (const loc of parsed.locs) {
       const childPath = toDistRelative(loc, context);
-      if (childPath === null || childPath === '') {
+      if (childPath === null || childPath === '' || !safeDistFilePath(distDir, childPath)) {
         missing.push(loc);
         continue;
       }
@@ -192,7 +251,7 @@ function collectSitemapLocs(distDir, rootFile, context) {
   };
 
   visit(rootFile, 0);
-  return { locs, files, missing };
+  return { locs, files, missing, depthExceeded };
 }
 
 function extractDocumentUrls(content) {
@@ -212,12 +271,17 @@ function extractDocumentUrls(content) {
 }
 
 function extractFeedUrls(content) {
+  const cleaned = stripXmlCommentsOutsideCdata(content);
   const urls = [];
   for (const tag of ['link', 'guid']) {
-    const pattern = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'gi');
+    const pattern = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'gi');
     let match;
-    while ((match = pattern.exec(content)) !== null) {
-      const value = decodeXmlEntities(match[1]);
+    while ((match = pattern.exec(cleaned)) !== null) {
+      const attrs = match[1] || '';
+      if (tag === 'guid' && /\bisPermaLink\s*=\s*(?:"false"|'false'|false\b)/i.test(attrs)) {
+        continue;
+      }
+      const value = unwrapXmlValue(match[2]);
       if (value && !/^urn:/i.test(value)) urls.push(value);
     }
   }
@@ -246,8 +310,65 @@ function summarize(items, limit = SAMPLE_LIMIT) {
   return unique.length > limit ? `${samples} 等 ${unique.length} 项` : samples;
 }
 
-function resolveVerifySiteUrl({ siteUrl, projectRoot, options }) {
-  if (typeof siteUrl === 'string' && siteUrl.trim()) {
+function inferSiteUrlFromDistOutput(distDir, options = {}) {
+  const sitemapCandidates = listTopLevelSitemaps(distDir);
+  for (const fileName of sitemapCandidates) {
+    const content = readText(join(distDir, fileName));
+    if (!content) continue;
+    const { locs } = parseSitemapXml(content);
+    for (const loc of locs) {
+      try {
+        const parsed = new URL(loc);
+        if (/^https?:$/.test(parsed.protocol) && !parsed.username && !parsed.password) {
+          return normalizeSiteDomain(parsed.origin, `${fileName} <loc>`);
+        }
+      } catch {
+        // Ignore unparseable loc entries when probing fallback origin.
+      }
+    }
+  }
+
+  const stripPrefixes = (options.stripPathPrefixes || DEFAULT_STRIP_PATH_PREFIXES)
+    .map((prefix) => normalizeFilePath(prefix).replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean);
+  const htmlCandidates = [];
+  const rootIndex = join(distDir, 'index.html');
+  if (fileExists(rootIndex)) {
+    htmlCandidates.push(rootIndex);
+  } else {
+    for (const prefix of stripPrefixes) {
+      const prefixedIndex = safeDistFilePath(distDir, `${prefix}/index.html`);
+      if (prefixedIndex && fileExists(prefixedIndex)) htmlCandidates.push(prefixedIndex);
+    }
+  }
+
+  for (const htmlPath of htmlCandidates) {
+    const html = readText(htmlPath);
+    if (!html) continue;
+    try {
+      const facts = collectAuditFacts(parse(html));
+      for (const href of facts.canonicals || []) {
+        const trimmed = String(href || '').trim();
+        if (!trimmed) continue;
+        try {
+          const parsed = new URL(trimmed);
+          if (/^https?:$/.test(parsed.protocol) && !parsed.username && !parsed.password) {
+            return normalizeSiteDomain(parsed.origin, 'index.html canonical');
+          }
+        } catch {
+          // Relative canonicals cannot establish origin; continue probing.
+        }
+      }
+    } catch {
+      // Ignore parse issues during fallback probing.
+    }
+  }
+
+  return null;
+}
+
+function resolveVerifySiteUrl({ siteUrl, projectRoot, distDir, options }) {
+  if (siteUrl !== undefined && (typeof siteUrl !== 'string' || siteUrl.trim())) {
     return normalizeSiteDomain(siteUrl, 'siteUrl');
   }
   if (options.domain !== undefined) {
@@ -257,15 +378,35 @@ function resolveVerifySiteUrl({ siteUrl, projectRoot, options }) {
     const packageJsonPath = typeof options.packageJsonPath === 'string'
       ? resolve(projectRoot, options.packageJsonPath)
       : resolve(projectRoot, './package.json');
+    let rawPackageJson = null;
     try {
-      const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-      if (packageJson && packageJson.domain) {
+      rawPackageJson = readFileSync(packageJsonPath, 'utf-8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw new Error(`Failed to read package.json at ${packageJsonPath}: ${error?.message || String(error)}`);
+      }
+    }
+    if (rawPackageJson !== null) {
+      let packageJson;
+      try {
+        packageJson = JSON.parse(rawPackageJson);
+      } catch (error) {
+        throw new Error(`Invalid package.json at ${packageJsonPath}: ${error?.message || String(error)}`);
+      }
+      if (!packageJson || typeof packageJson !== 'object' || Array.isArray(packageJson)) {
+        throw new Error(`Invalid package.json at ${packageJsonPath}: expected a JSON object.`);
+      }
+      if (Object.prototype.hasOwnProperty.call(packageJson, 'domain') && packageJson.domain !== undefined) {
         return normalizeSiteDomain(packageJson.domain, 'package.json "domain"');
       }
-    } catch {
-      // Fall through to the actionable error below.
     }
   }
+
+  const inferredOrigin = inferSiteUrlFromDistOutput(distDir, options);
+  if (inferredOrigin) {
+    return inferredOrigin;
+  }
+
   throw new Error(
     "Missing required domain. Configure domain: 'https://example.com' or add \"domain\" to package.json.",
   );
@@ -298,12 +439,20 @@ export function verifyGeoOutput({
   if (!distDir) {
     throw new Error('verifyGeoOutput requires a distDir.');
   }
+  if (options !== undefined) {
+    validateGeoOptions(options);
+  }
   const resolvedDistDir = resolve(projectRoot, distDir);
   if (!existsSync(resolvedDistDir) || !statSync(resolvedDistDir).isDirectory()) {
     throw new Error(`Dist directory not found: ${resolvedDistDir}`);
   }
 
-  const resolvedSiteUrl = resolveVerifySiteUrl({ siteUrl, projectRoot, options });
+  const resolvedSiteUrl = resolveVerifySiteUrl({
+    siteUrl,
+    projectRoot,
+    distDir: resolvedDistDir,
+    options,
+  });
   const resolvedRouteBasePath = normalizeRouteBasePath(
     routeBasePath !== undefined ? routeBasePath : options.routeBasePath,
     { source: 'routeBasePath' },
@@ -328,17 +477,23 @@ export function verifyGeoOutput({
     excludePatterns: options.excludePatterns,
   });
 
-  const pagesByPath = new Map();
+  const routeGroups = new Map();
   for (const filePath of classified.included) {
     const relativePath = normalizeFilePath(relative(resolvedDistDir, filePath));
     const pagePath = resolvePagePath(relativePath, options);
-    if (!pagesByPath.has(pagePath)) {
-      pagesByPath.set(pagePath, { filePath, relativePath, pagePath });
+    if (!routeGroups.has(pagePath)) {
+      routeGroups.set(pagePath, []);
     }
+    routeGroups.get(pagePath).push({ filePath, relativePath, pagePath });
   }
+  const { selected: selectedPages } = resolvePagePathConflicts(routeGroups, {
+    ...options,
+    routeConflict: options.routeConflict || 'first',
+  });
+  const pagesByPath = new Map(selectedPages.map((page) => [page.pagePath, page]));
 
   const pageUrlByPath = new Map();
-  for (const [pagePath, page] of pagesByPath) {
+  for (const [pagePath] of pagesByPath) {
     pageUrlByPath.set(pagePath, composePageUrl(resolvedSiteUrl, pagePath, resolvedRouteBasePath));
   }
 
@@ -350,14 +505,22 @@ export function verifyGeoOutput({
     const explicitSitemap = typeof options.sitemapUrl === 'string' ? options.sitemapUrl.trim() : '';
     const candidates = [];
     if (explicitSitemap) {
-      const explicitRelative = toDistRelative(explicitSitemap, context);
-      if (explicitRelative) candidates.push(explicitRelative);
+      const explicitFromUrl = toDistRelative(explicitSitemap, context);
+      if (explicitFromUrl && safeDistFilePath(resolvedDistDir, explicitFromUrl)) {
+        candidates.push(explicitFromUrl);
+      } else if (!/^[a-z][a-z\d+.-]*:/i.test(explicitSitemap) && !explicitSitemap.startsWith('//')) {
+        const directRelative = normalizeFilePath(explicitSitemap).replace(/^\/+/, '');
+        if (directRelative && safeDistFilePath(resolvedDistDir, directRelative)) {
+          candidates.push(directRelative);
+        }
+      }
     }
-    candidates.push('sitemap.xml', 'sitemap_index.xml', ...listTopLevelSitemaps(resolvedDistDir));
+    candidates.push(...listTopLevelSitemaps(resolvedDistDir));
 
-    sitemapFile = candidates.find((candidate) => (
-      candidate && fileExists(join(resolvedDistDir, candidate))
-    )) || null;
+    sitemapFile = candidates.find((candidate) => {
+      const resolvedCandidate = candidate ? safeDistFilePath(resolvedDistDir, candidate) : null;
+      return Boolean(resolvedCandidate && fileExists(resolvedCandidate));
+    }) || null;
 
     if (!sitemapFile) {
       add(
@@ -371,6 +534,15 @@ export function verifyGeoOutput({
       sitemap = collectSitemapLocs(resolvedDistDir, sitemapFile, context);
       locKeys = new Set(sitemap.locs.map((loc) => normalizeUrlKey(loc, resolvedSiteUrl)).filter(Boolean));
 
+      if (sitemap.depthExceeded.length > 0) {
+        add(
+          'warning',
+          'sitemap-index-depth',
+          sitemapFile,
+          `sitemap 索引递归超过最大深度（${SITEMAP_INDEX_MAX_DEPTH}）：${summarize(sitemap.depthExceeded)}`,
+          '精简多层嵌套的 sitemap 索引，避免搜索引擎和校验器遗漏子文件。',
+        );
+      }
       if (sitemap.missing.length > 0) {
         add(
           'error',
@@ -548,13 +720,26 @@ export function verifyGeoOutput({
     }
 
     const expectedPageUrl = pageUrlByPath.get(page.pagePath);
+    const filePageUrl = composePageUrl(
+      resolvedSiteUrl,
+      resolvePagePath(page.relativePath, { ...options, prettyUrls: false }),
+      resolvedRouteBasePath,
+    );
+    let documentBaseUrl = filePageUrl;
+    if (facts?.baseHref !== null && facts?.baseHref !== undefined) {
+      try {
+        documentBaseUrl = new URL(facts.baseHref, filePageUrl).href;
+      } catch {
+        documentBaseUrl = filePageUrl;
+      }
+    }
 
     if (facts) {
       const canonicalUrls = (facts.canonicals || []).filter((href) => String(href).trim());
       for (const href of canonicalUrls) {
         let resolvedCanonical;
         try {
-          resolvedCanonical = new URL(href, expectedPageUrl).href;
+          resolvedCanonical = new URL(href, documentBaseUrl).href;
         } catch {
           continue;
         }
@@ -590,7 +775,7 @@ export function verifyGeoOutput({
       );
     }
 
-    const declared = facts ? declaredMarkdownUrls(facts, expectedPageUrl) : [];
+    const declared = facts ? declaredMarkdownUrls(facts, documentBaseUrl) : [];
     if (declared.length > 0) {
       for (const url of declared) {
         const relativePath = toDistRelative(url, context);
@@ -643,8 +828,9 @@ export function verifyGeoOutput({
       const relativePath = toDistRelative(url, context);
       if (relativePath === null) continue;
       const key = normalizeUrlKey(url, resolvedSiteUrl);
-      if (resolveArtifactFile(resolvedDistDir, relativePath, stripPrefixes) === null
-        || (!/\.html?$/i.test(relativePath) ? false : !acceptedBySitemap(key))) {
+      const artifact = resolveArtifactFile(resolvedDistDir, relativePath, stripPrefixes);
+      const isHtmlArtifact = artifact !== null && HTML_EXTENSION_PATTERN.test(artifact);
+      if (artifact === null || (isHtmlArtifact && !acceptedBySitemap(key))) {
         invalid.push(url);
       }
     }
@@ -694,10 +880,10 @@ export function verifyGeoOutput({
 
   const unique = [...new Map(diagnostics.map((item) => [JSON.stringify(item), item])).values()];
   unique.sort((a, b) => (
-    a.severity.localeCompare(b.severity)
-    || String(a.path).localeCompare(String(b.path))
-    || a.rule.localeCompare(b.rule)
-    || String(a.evidence).localeCompare(String(b.evidence))
+    compareCodeUnits(a.severity, b.severity)
+    || compareCodeUnits(a.path, b.path)
+    || compareCodeUnits(a.rule, b.rule)
+    || compareCodeUnits(a.evidence, b.evidence)
   ));
 
   const errors = unique.filter((item) => item.severity === 'error');
@@ -713,7 +899,7 @@ export function verifyGeoOutput({
       checkedLocs: sitemap ? sitemap.locs.length : 0,
       sitemapChecked: Boolean(sitemap),
       sitemapFiles: sitemap ? sitemap.files : [],
-      markdownMirrorPaths: markdownMirrorPaths.sort((a, b) => a.localeCompare(b)),
+      markdownMirrorPaths: [...markdownMirrorPaths].sort(compareCodeUnits),
     },
     summary: {
       siteUrl: resolvedSiteUrl,

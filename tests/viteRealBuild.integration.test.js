@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { build as buildVite7 } from 'vite7';
-import { build as buildVite8 } from 'vite8';
+import { build as buildVite8, createBuilder as createVite8Builder } from 'vite8';
 import { createGeoGeneratorPlugin } from '../src/viteGeoGeneratorPlugin.js';
 
 const fixtureRoot = join(process.cwd(), 'tempfiles', '__real-vite-builds__');
@@ -184,5 +184,99 @@ describe('real Vite builds', () => {
       expect(existsSync(join(root, 'dist/robots.txt'))).toBe(true);
     }, 20_000);
   });
+
+  it('derives file-mtime lastmod from Vite source HTML via originalFileName in clean builds', async () => {
+    const root = join(fixtureRoot, 'vite8-file-mtime');
+    const distDir = join(root, 'dist');
+    writeFixture(root, 'package.json', JSON.stringify({
+      name: 'vite-mtime-build',
+      domain: 'https://example.com',
+    }));
+    const indexPath = join(root, 'index.html');
+    writeFixture(
+      root,
+      'index.html',
+      '<!doctype html><html lang="en"><head><title>Mtime Page</title><meta name="description" content="Mtime"></head><body><h1>Mtime</h1></body></html>',
+    );
+    const fixedTime = new Date('2025-08-15T12:34:56.000Z');
+    utimesSync(indexPath, fixedTime, fixedTime);
+
+    await buildVite8({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [createGeoGeneratorPlugin({
+        audit: false,
+        generateFeed: false,
+        llmsMdMirror: false,
+        lastmodStrategy: 'file-mtime',
+      })],
+      build: {
+        outDir: distDir,
+        emptyOutDir: true,
+      },
+    });
+
+    expect(readFileSync(join(distDir, 'sitemap.xml'), 'utf-8'))
+      .toContain('<lastmod>2025-08-15T12:34:56.000Z</lastmod>');
+  }, 20_000);
+
+  it('builds multi-environment Vite 8 client+ssr without SSR warnings and emits client GEO outputs', async () => {
+    const root = join(fixtureRoot, 'vite8-multi-env');
+    writeFixture(root, 'package.json', JSON.stringify({
+      name: 'vite8-multi-env',
+      domain: 'https://example.com',
+    }));
+    writeFixture(
+      root,
+      'index.html',
+      '<!doctype html><html lang="en"><head><title>Multi Env Client</title><meta name="description" content="Client"></head><body><h1>Multi Env</h1></body></html>',
+    );
+    writeFixture(root, 'src/entry-server.js', 'export function render() { return "<html></html>"; }\n');
+
+    const warnings = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args) => warnings.push(args.join(' ')));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const builder = await createVite8Builder({
+        root,
+        configFile: false,
+        logLevel: 'silent',
+        environments: {
+          client: {
+            build: {
+              outDir: join(root, 'dist/client'),
+              emptyOutDir: true,
+            },
+          },
+          ssr: {
+            consumer: 'server',
+            build: {
+              outDir: join(root, 'dist/server'),
+              emptyOutDir: true,
+              ssr: join(root, 'src/entry-server.js'),
+            },
+          },
+        },
+        plugins: [createGeoGeneratorPlugin({
+          audit: false,
+          llmsMdMirror: false,
+          generateFeed: false,
+        })],
+      }, false);
+
+      await builder.build(builder.environments.ssr);
+      await builder.build(builder.environments.client);
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+
+    expect(warnings.some((message) => message.includes('No HTML pages were found'))).toBe(false);
+    expect(existsSync(join(root, 'dist/server/sitemap.xml'))).toBe(false);
+    expect(existsSync(join(root, 'dist/client/sitemap.xml'))).toBe(true);
+    expect(existsSync(join(root, 'dist/client/robots.txt'))).toBe(true);
+    expect(readFileSync(join(root, 'dist/client/llms.txt'), 'utf-8')).toContain('# Multi Env Client');
+  }, 20_000);
 
 });

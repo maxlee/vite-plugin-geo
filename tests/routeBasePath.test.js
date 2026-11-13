@@ -70,4 +70,15 @@ describe('routeBasePath validation', () => {
       logger: { info() {}, warn() {}, error() {} },
     })).rejects.toThrow(/Astro base.*absolute URL/);
   });
+
+  it('rejects encoded traversal segments and keeps colons, hashes, and queries in page URLs safe', () => {
+    expect(() => normalizeRouteBasePath('/%2e%2e/')).toThrow(/Path segments/);
+    expect(() => normalizeRouteBasePath('/docs/?x=\n')).toThrow(/Invalid routeBasePath/);
+    expect(() => normalizeRouteBasePath(123)).toThrow(/must be a string/);
+
+    expect(composePageUrl('https://example.com', 'foo:bar')).toBe('https://example.com/foo:bar');
+    expect(composePageUrl('https://example.com', 'c#')).toBe('https://example.com/c%23');
+    expect(composePageUrl('https://example.com', 'a?b')).toBe('https://example.com/a%3Fb');
+    expect(() => composePageUrl('https://example.com', '../secret')).toThrow(/\.\./);
+  });
 });

@@ -105,4 +105,35 @@ describe('0.2.0 audit rules', () => {
     expect(auditFailures(adviceOnly, 'warning')).toBe(false);
     expect(auditFailures(adviceOnly, 'advice')).toBe(true);
   });
+
+  it('resolves directory trailing-slash anchors and hreflang alternates under prettyUrls: false', () => {
+    const home = page('index.html', {
+      pagePath: '',
+      pageUrl: siteUrl,
+      filePageUrl: `${siteUrl}/index.html`,
+    });
+    const zh = page('zh/index.html', {
+      pagePath: 'zh/index.html',
+      pageUrl: `${siteUrl}/zh/index.html`,
+      filePageUrl: `${siteUrl}/zh/index.html`,
+    });
+    home.audit.anchors = [{ href: '/zh/', download: false }];
+    home.audit.links.push(
+      { rel: 'alternate', hreflang: 'en', href: `${siteUrl}/` },
+      { rel: 'alternate', hreflang: 'zh', href: `${siteUrl}/zh/` },
+    );
+    zh.audit.links.push(
+      { rel: 'alternate', hreflang: 'en', href: `${siteUrl}/` },
+      { rel: 'alternate', hreflang: 'zh', href: `${siteUrl}/zh/` },
+    );
+
+    const result = run([home, zh], {
+      options: { prettyUrls: false, generateFeed: false, llmsMdMirror: false },
+    });
+
+    expect(rules(result)).not.toContain('orphan-page');
+    expect(rules(result)).not.toContain('anchor-target-missing');
+    expect(rules(result)).not.toContain('hreflang-self-reference');
+    expect(rules(result)).not.toContain('hreflang-reciprocity');
+  });
 });

@@ -6,11 +6,19 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import {
+  compareCodeUnits,
+  decodeXmlEntities,
+  escapeHtmlAttribute,
+  escapeXml,
   extractLastmod,
   resolveLastmodSourcePath,
   filterHtmlFiles,
+  isValidLanguageTag,
+  isWithinDir,
+  matchGlob,
   normalizeFilePath,
   resolvePagePath,
+  sanitizeControlChars,
 } from '../src/geoGenerator.js';
 
 describe('Core Functionality Tests', () => {
@@ -252,6 +260,38 @@ describe('Core Functionality Tests', () => {
       expect(normalizeFilePath('./path/to/file')).toBe('path/to/file');
       expect(normalizeFilePath('/path/to/file')).toBe('path/to/file');
       expect(normalizeFilePath('path\\to\\file')).toBe('path/to/file');
+    });
+
+    it('detects unquoted noindex meta tags without triggering on HTML comments', async () => {
+      const commented = join(testDir, 'commented.html');
+      const unquoted = join(testDir, 'unquoted.html');
+      writeFileSync(commented, '<html><head><!-- <meta name="robots" content="noindex"> --></head></html>');
+      writeFileSync(unquoted, '<html><head><meta name=robots content=noindex></head></html>');
+
+      const result = await filterHtmlFiles([commented, unquoted], { distDir: testDir });
+      expect(result.included).toEqual([commented]);
+      expect(result.excluded).toEqual([unquoted]);
+    });
+
+    it('extracts git lastmod for relative repository file paths', () => {
+      const timestamp = extractLastmod('src/index.js', 'git', '2026-01-01T00:00:00.000Z');
+      expect(timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('exposes shared sanitization, path boundary, XML, and glob helpers', () => {
+      expect(compareCodeUnits('a', 'b')).toBe(-1);
+      expect(isWithinDir('/tmp/dist', '/tmp/dist/sub/file.md')).toBe(true);
+      expect(isWithinDir('/tmp/dist', '/tmp/dist2/file.md')).toBe(false);
+      expect(isWithinDir('/tmp/dist', '/tmp/dist/../etc/passwd')).toBe(false);
+      expect(sanitizeControlChars('Hi\nThere\x00')).toBe('Hi There');
+      expect(escapeXml('a\x00<b&"c">')).toBe('a&lt;b&amp;&quot;c&quot;&gt;');
+      expect(escapeHtmlAttribute('x" onclick="y')).toBe('x&quot; onclick=&quot;y');
+      expect(decodeXmlEntities('&amp;lt;&#99999999;&#xD800;&#65;')).toBe('&lt;&#99999999;&#xD800;A');
+      expect(isValidLanguageTag('en-x-custom')).toBe(true);
+      expect(isValidLanguageTag('en-US')).toBe(true);
+      expect(matchGlob('**/*.html', 'index.html')).toBe(true);
+      expect(matchGlob('**/*.html', 'docs/guide.html')).toBe(true);
+      expect(matchGlob('foo___DOUBLESTAR___bar', 'fooXbar')).toBe(false);
     });
   });
 });
