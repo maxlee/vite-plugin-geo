@@ -33,7 +33,7 @@ describe('vite-plugin-geo publish manifest', () => {
   it('points npm entry fields at src/ runtime files and whitelists only publishable paths', () => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
 
-    expect(manifest.version).toBe('0.2.2');
+    expect(manifest.version).toBe('0.3.0');
     expect(manifest).toMatchObject({
       name: 'vite-plugin-geo',
       main: './src/index.js',
@@ -200,6 +200,7 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(readmeZh).toContain('可选 Astro peer');
     expect(readmeZh).not.toContain('STANDARDS.md');
 
+    expect(changelog).toContain('## [0.3.0]');
     expect(changelog).toContain('## [0.2.2]');
     expect(changelog).toContain('## [0.2.1]');
     expect(changelog).toContain('## [0.2.0]');
@@ -210,7 +211,7 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(license).toContain('Copyright (c) 2026 maxlee');
   });
 
-  it('publishes only the v0.2.2 public option surface', () => {
+  it('publishes only the v0.3.0 public option surface', () => {
     const declarations = readFileSync(join(packageDir, 'src', 'index.d.ts'), 'utf-8');
 
     expect(declarations).toContain("export type LastmodStrategy = 'none' | 'file-mtime' | 'build' | 'git'");

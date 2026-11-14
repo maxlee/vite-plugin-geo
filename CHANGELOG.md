@@ -4,11 +4,18 @@ All notable changes to `vite-plugin-geo` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0]
 
 ### Added
 
+- **Vite+ support**: Works in Vite+ (`vite-plus`) projects, including `lazyPlugins`. The consumer matrix now builds a Vite+ 1.6.0 project from the packed tarball.
 - **`package.json` `homepage` fallback for the site domain**: When neither `geo({ domain })` / `--domain` nor `package.json` `domain` is set, an absolute `http(s)` `homepage` is used as the site origin across Vite, Astro, `generate`, and `verify`. It must be origin-only like `domain`. Relative values such as `"."` are ignored.
+
+### Changed
+
+- **Source layout**: Runtime files moved to `src/`. The public entry points (`vite-plugin-geo`, `vite-plugin-geo/astro`, and the `vite-plugin-geo` bin) are unchanged.
+- **Astro output handling**: Astro redirect pages are excluded from generated outputs.
+- **Sitemap detection**: Existing sitemap files are recognized regardless of `.xml` extension case, and sitemap entries are sorted by code unit for deterministic output.
 
 ## [0.2.2]
 
