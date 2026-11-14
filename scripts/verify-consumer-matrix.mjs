@@ -122,7 +122,7 @@ async function verifyViteRelease(root, tarballPath, viteVersion, { npmCacheDir }
   );
   await writeFile(
     join(root, 'index.html'),
-    '<!doctype html><html lang="en"><head><title>GEO Vite consumer</title><meta name="description" content="Consumer matrix"></head><body><h1>Home</h1><a href="/about.html">About</a></body></html>',
+    '<!doctype html><html lang="en"><head><title>GEO Vite consumer</title><meta name="description" content="Consumer matrix"></head><body><h1>Home</h1><a href="/about">About</a></body></html>',
     'utf-8',
   );
   await writeFile(
@@ -269,7 +269,7 @@ async function verifyVitePlusRelease(root, tarballPath, vitePlusVersion, { npmCa
   );
   await writeFile(
     join(root, 'index.html'),
-    '<!doctype html><html lang="en"><head><title>GEO Vite+ consumer</title><meta name="description" content="Consumer matrix"></head><body><h1>Home</h1><a href="/about.html">About</a></body></html>',
+    '<!doctype html><html lang="en"><head><title>GEO Vite+ consumer</title><meta name="description" content="Consumer matrix"></head><body><h1>Home</h1><a href="/about">About</a></body></html>',
     'utf-8',
   );
   await writeFile(

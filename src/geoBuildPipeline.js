@@ -47,6 +47,8 @@ import {
   extractTeamInfoFromPackageJson,
   extractTechStackFromPackageJson,
   normalizeSiteDomain,
+  resolvePackageJsonSiteDomain,
+  MISSING_DOMAIN_MESSAGE,
 } from './geoMetadataResolver.js';
 import { resolveGeneratedSitemapUrl } from './astroSitemapCompatibility.js';
 
@@ -249,10 +251,11 @@ function resolveSiteUrl(options, packageJson) {
   if (Object.prototype.hasOwnProperty.call(options, 'domain') && options.domain !== undefined) {
     return normalizeSiteDomain(options.domain, 'domain');
   }
-  if (packageJson && Object.prototype.hasOwnProperty.call(packageJson, 'domain')) {
-    return normalizeSiteDomain(packageJson.domain, 'package.json "domain"');
+  const packageDomain = resolvePackageJsonSiteDomain(packageJson);
+  if (packageDomain) {
+    return packageDomain;
   }
-  throw new Error('Missing required domain. Configure geo({ domain: \'https://example.com\' }) or add "domain" to package.json.');
+  throw new Error(MISSING_DOMAIN_MESSAGE);
 }
 
 function dedupePageInputs(inputs, options) {

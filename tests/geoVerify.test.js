@@ -193,6 +193,20 @@ describe('geo verify', () => {
     expect(result.checks.sitemapFiles).toEqual(['sitemap-index.xml', 'sitemap-0.xml', 'sitemap-1.xml']);
   });
 
+  it('generates and verifies with package.json homepage when domain is absent', async () => {
+    const f = fixture();
+    writeFileSync(join(f.root, 'package.json'), JSON.stringify({ name: 'homepage-only', homepage: `${siteUrl}/` }));
+    await generate(f);
+    expect(readFileSync(join(f.distDir, 'sitemap.xml'), 'utf-8')).toContain(`${siteUrl}/`);
+
+    const result = verify(f);
+    expect(result.ok).toBe(true);
+    expect(result.summary.siteUrl).toBe(siteUrl);
+
+    writeFileSync(join(f.root, 'package.json'), JSON.stringify({ name: 'relative-homepage', homepage: '.' }));
+    expect(verify(f).summary.siteUrl).toBe(siteUrl);
+  });
+
   it('infers siteUrl from dist output or rejects malformed package.json and invalid options', async () => {
     const f = fixture();
     await generate(f);

@@ -25,7 +25,7 @@ Usage:
   vite-plugin-geo verify [options]
 
 Options:
-  --domain <url>              Public site domain, overrides package.json domain
+  --domain <url>              Public site domain, overrides package.json domain/homepage
   --dist-dir <path>            Dist directory (default: dist)
   --route-base-path <path>     URL base path (default: '')
   --source-html-dir <path>     Source HTML directory for mtime (default: src/pages)

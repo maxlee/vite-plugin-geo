@@ -95,7 +95,7 @@ export default defineConfig({
 
 `domain` must be an HTTP(S) origin containing only scheme, host, and optional port (for example, `https://example.com`). Do not include credentials, paths, query strings, or fragments. Express subpath deployments with `routeBasePath`.
 
-You can also store `domain` in your project `package.json`. When both exist, `geo({ domain })` wins. When neither exists, the build stops instead of emitting broken public URLs.
+You can also store `domain` in your project `package.json`. When both exist, `geo({ domain })` wins. If `package.json` has no `domain`, an absolute `homepage` URL (for example, `"homepage": "https://example.com"`) is used instead. It must follow the same origin-only rule. Relative values such as `"."` are ignored. When none of these exist, the build stops instead of emitting broken public URLs.
 
 Named exports are also available:
 
@@ -151,7 +151,7 @@ export default defineConfig({
 });
 ```
 
-Domain resolution order in Astro is `geo({ domain })`, then Astro `site`, then `package.json.domain`.
+Domain resolution order in Astro is `geo({ domain })`, then Astro `site`, then `package.json.domain`, then an absolute `package.json.homepage`.
 
 Astro integration notes:
 
@@ -203,7 +203,7 @@ dist/
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `domain` | `string` | `package.json.domain` | Public HTTP(S) origin without credentials, path, query, or hash. |
+| `domain` | `string` | `package.json.domain`, then `package.json.homepage` | Public HTTP(S) origin without credentials, path, query, or hash. |
 | `distDir` | `string` | Vite `build.outDir` | Build output directory (not applicable to `vite-plugin-geo/astro`). |
 | `routeBasePath` | `string` | Vite or Astro `base` | Single public path scope (for example, `'/docs/'`). Rejects full URLs. |
 | `prettyUrls` | `boolean` | `true` | Strip `.html` extensions from public page URLs. |
@@ -339,7 +339,7 @@ GitHub Actions SARIF workflow example:
 
 | Flag | Description |
 |---|---|
-| `--domain <url>` | Public site origin; overrides `package.json.domain`. |
+| `--domain <url>` | Public site origin; overrides `package.json.domain` and `homepage`. |
 | `--dist-dir <path>` | Build output directory (default: `dist`). |
 | `--route-base-path <path>` | Single public URL subpath prefix. |
 | `--source-html-dir <path>` | Source HTML directory (default: `src/pages`). |

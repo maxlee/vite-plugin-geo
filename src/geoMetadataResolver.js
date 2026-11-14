@@ -49,7 +49,29 @@ export function normalizeSiteDomain(domain, sourceLabel = 'domain') {
   return parsedUrl.origin;
 }
 
-function readPackageJsonDomain(packageJsonPath) {
+export const MISSING_DOMAIN_MESSAGE = 'Missing required domain. Configure geo({ domain: \'https://example.com\' }) or add "domain" (or an absolute "homepage" URL) to package.json.';
+
+/**
+ * Resolve the site origin from a parsed package.json.
+ * "domain" wins; "homepage" is used only when it is an absolute http(s) URL,
+ * so relative values such as "." (Create React App base path) are ignored.
+ * @param {object|null} packageJson - Parsed package.json object
+ * @returns {string|null} Normalized origin, or null when neither field applies
+ */
+export function resolvePackageJsonSiteDomain(packageJson) {
+  if (!packageJson) {
+    return null;
+  }
+  if (hasOwn(packageJson, 'domain') && packageJson.domain !== undefined) {
+    return normalizeSiteDomain(packageJson.domain, 'package.json "domain"');
+  }
+  if (typeof packageJson.homepage === 'string' && /^https?:\/\//i.test(packageJson.homepage.trim())) {
+    return normalizeSiteDomain(packageJson.homepage, 'package.json "homepage"');
+  }
+  return null;
+}
+
+function readPackageJson(packageJsonPath) {
   if (packageJsonPath === false || typeof packageJsonPath !== 'string' || !packageJsonPath.trim()) {
     return null;
   }
@@ -75,14 +97,7 @@ function readPackageJsonDomain(packageJsonPath) {
     throw new Error(`Invalid package.json at ${packageJsonPath}: expected a JSON object.`);
   }
 
-  if (!hasOwn(packageJson, 'domain')) {
-    return null;
-  }
-
-  return {
-    value: packageJson.domain,
-    sourceLabel: 'package.json "domain"',
-  };
+  return packageJson;
 }
 
 function resolveConfiguredDomain(options, packageJsonPath) {
@@ -90,12 +105,12 @@ function resolveConfiguredDomain(options, packageJsonPath) {
     return normalizeSiteDomain(options.domain, 'domain');
   }
 
-  const packageDomain = readPackageJsonDomain(packageJsonPath);
+  const packageDomain = resolvePackageJsonSiteDomain(readPackageJson(packageJsonPath));
   if (packageDomain) {
-    return normalizeSiteDomain(packageDomain.value, packageDomain.sourceLabel);
+    return packageDomain;
   }
 
-  throw new Error('Missing required domain. Configure geo({ domain: \'https://example.com\' }) or add "domain" to package.json.');
+  throw new Error(MISSING_DOMAIN_MESSAGE);
 }
 
 function resolveIndexHtmlPath(distDir, htmlFiles, stripPathPrefixes) {
@@ -126,7 +141,7 @@ function resolveIndexHtmlPath(distDir, htmlFiles, stripPathPrefixes) {
  * Read final site metadata from build output and package.json.
  * Required source mapping:
  * - title/description/lang from dist/index.html (or equivalent homepage HTML file)
- * - url from options.domain, falling back to packageJson.domain
+ * - url from options.domain, falling back to packageJson.domain, then an absolute packageJson.homepage
  * @param {string} distDir - Dist output directory
  * @param {object} [options={}] - Resolver options
  * @param {string} [options.domain] - Public site domain, overrides package.json domain

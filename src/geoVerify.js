@@ -23,7 +23,7 @@ import {
   resolvePagePath,
   resolvePagePathConflicts,
 } from './geoGenerator.js';
-import { normalizeSiteDomain } from './geoMetadataResolver.js';
+import { normalizeSiteDomain, resolvePackageJsonSiteDomain } from './geoMetadataResolver.js';
 
 const DEFAULT_STRIP_PATH_PREFIXES = ['src/pages/'];
 const SITEMAP_INDEX_MAX_DEPTH = 5;
@@ -396,8 +396,9 @@ function resolveVerifySiteUrl({ siteUrl, projectRoot, distDir, options }) {
       if (!packageJson || typeof packageJson !== 'object' || Array.isArray(packageJson)) {
         throw new Error(`Invalid package.json at ${packageJsonPath}: expected a JSON object.`);
       }
-      if (Object.prototype.hasOwnProperty.call(packageJson, 'domain') && packageJson.domain !== undefined) {
-        return normalizeSiteDomain(packageJson.domain, 'package.json "domain"');
+      const packageDomain = resolvePackageJsonSiteDomain(packageJson);
+      if (packageDomain) {
+        return packageDomain;
       }
     }
   }
@@ -408,7 +409,7 @@ function resolveVerifySiteUrl({ siteUrl, projectRoot, distDir, options }) {
   }
 
   throw new Error(
-    "Missing required domain. Configure domain: 'https://example.com' or add \"domain\" to package.json.",
+    "Missing required domain. Configure domain: 'https://example.com' or add \"domain\" (or an absolute \"homepage\" URL) to package.json.",
   );
 }
 

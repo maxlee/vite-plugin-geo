@@ -95,7 +95,7 @@ export default defineConfig({
 
 `domain` 必须是仅包含协议、主机和可选端口的 HTTP(S) 站点源（如 `https://example.com`），不得包含凭据、路径、查询参数或片段；子路径部署请使用 `routeBasePath`。
 
-你也可以在项目 `package.json` 中配置 `"domain"` 字段。两处同时配置时 `geo({ domain })` 优先；两处均缺失时停止构建，防止产出错误的公开链接。
+你也可以在项目 `package.json` 中配置 `"domain"` 字段。两处同时配置时 `geo({ domain })` 优先。若 `package.json` 没有 `domain`，会改用绝对 URL 形式的 `homepage`（如 `"homepage": "https://example.com"`），同样须符合仅含站点源的规则；`"."` 等相对值会被忽略。以上均缺失时停止构建，防止产出错误的公开链接。
 
 支持默认导出与命名导出：
 
@@ -151,7 +151,7 @@ export default defineConfig({
 });
 ```
 
-域名读取优先级依次为 `geo({ domain })`、Astro `site`、`package.json.domain`。已配置 `site` 时无需重复填写 `domain`。
+域名读取优先级依次为 `geo({ domain })`、Astro `site`、`package.json.domain`、绝对 URL 形式的 `package.json.homepage`。已配置 `site` 时无需重复填写 `domain`。
 
 Astro 集成说明：
 
@@ -203,7 +203,7 @@ dist/
 
 | 选项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `domain` | `string` | `package.json.domain` | 不含凭据、路径、查询参数或片段的 HTTP(S) 站点源。 |
+| `domain` | `string` | `package.json.domain`，其次 `package.json.homepage` | 不含凭据、路径、查询参数或片段的 HTTP(S) 站点源。 |
 | `distDir` | `string` | Vite `build.outDir` | 构建输出目录（`vite-plugin-geo/astro` 自动读取构建目录，无需配置）。 |
 | `routeBasePath` | `string` | Vite 或 Astro `base` | 单一公开路径作用域（如 `'/docs/'`）；传完整 URL 会报错。 |
 | `prettyUrls` | `boolean` | `true` | 公开页面 URL 是否去除 `.html` 后缀。 |
@@ -323,7 +323,7 @@ GitHub Actions 接入 SARIF 示例：
 
 | 参数 | 说明 |
 |---|---|
-| `--domain <url>` | 公开站点源，优先于 `package.json.domain`。 |
+| `--domain <url>` | 公开站点源，优先于 `package.json.domain` 与 `homepage`。 |
 | `--dist-dir <path>` | 构建输出目录，默认 `dist`。 |
 | `--route-base-path <path>` | 单一公开路径前缀。 |
 | `--source-html-dir <path>` | 源码 HTML 目录，默认 `src/pages`。 |

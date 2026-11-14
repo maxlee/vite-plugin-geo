@@ -247,6 +247,40 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
     expect(metadata.url).toBe('https://config.example.com');
   });
 
+  describe('package.json homepage fallback', () => {
+    function resolveWithPackageJson(packageJson) {
+      const distDir = join(fixtureRoot, 'dist');
+      writeFixtureFile('dist/index.html', '<html><head><title>Home</title></head></html>');
+      const packageJsonPath = writeFixtureFile('package.json', JSON.stringify(packageJson));
+      return () => resolveSiteMetadataFromBuildOutput(distDir, {
+        packageJsonPath,
+        htmlFiles: [join(distDir, 'index.html')],
+      });
+    }
+
+    it('uses an absolute homepage when domain is absent', () => {
+      expect(resolveWithPackageJson({ name: 'fixture', homepage: 'https://home.example.com/' })().url)
+        .toBe('https://home.example.com');
+    });
+
+    it('prefers domain over homepage', () => {
+      expect(resolveWithPackageJson({
+        name: 'fixture',
+        domain: 'https://domain.example.com',
+        homepage: 'https://home.example.com',
+      })().url).toBe('https://domain.example.com');
+    });
+
+    it('ignores a relative homepage and reports the missing domain', () => {
+      expect(resolveWithPackageJson({ name: 'fixture', homepage: '.' })).toThrow(/Missing required domain.*homepage/);
+    });
+
+    it('rejects a homepage that carries a path or fragment', () => {
+      expect(resolveWithPackageJson({ name: 'fixture', homepage: 'https://github.com/owner/repo#readme' }))
+        .toThrow(/package\.json "homepage" must be an origin-only URL/);
+    });
+  });
+
   it('rejects domains that are not absolute http or https URLs', () => {
     const distDir = join(fixtureRoot, 'dist');
     ensureDir(distDir);
