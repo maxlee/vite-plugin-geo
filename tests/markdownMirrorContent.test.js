@@ -177,12 +177,12 @@ describe('markdown mirror composition', () => {
     })).toBe('# Docs\n\n> Docs desc\n\nMain body.');
   });
 
-  it('keeps a leading H1 that differs from the title', () => {
+  it('downgrades a leading H1 that differs from the title to keep a single H1', () => {
     expect(composeMarkdownMirrorContent({
       title: 'Docs | Acme',
       description: '',
       markdown: '# Docs\n\nMain body.',
-    })).toBe('# Docs | Acme\n\n# Docs\n\nMain body.');
+    })).toBe('# Docs | Acme\n\n## Docs\n\nMain body.');
   });
 
   it('omits a description equal to the title', () => {

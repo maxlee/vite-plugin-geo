@@ -136,4 +136,62 @@ describe('llms.txt and Markdown generation', () => {
     expect(result).not.toMatch(/\uFFFD/);
     expect(result).toContain(`${'A'.repeat(76)}😀...`);
   });
+
+  it('falls back to pageUrl when pageModel.markdownUrl is null and filters mirrors when pageModel is absent', () => {
+    const homeFile = join(testDir, 'index.html');
+    const guideFile = join(testDir, 'guides', 'intro.html');
+    const pricingFile = join(testDir, 'pricing.html');
+    mkdirSync(join(testDir, 'guides'), { recursive: true });
+    writeFileSync(homeFile, '<html><head><title>Home</title><meta name="description" content="Home page"></head></html>');
+    writeFileSync(guideFile, '<html><head><title>Intro Guide</title><meta name="description" content="Guide desc"></head></html>');
+    writeFileSync(pricingFile, '<html><head><title>Pricing</title><meta name="description" content="Pricing desc"></head></html>');
+
+    const pageModels = new Map([
+      [homeFile, {
+        filePath: homeFile,
+        relativePath: 'index.html',
+        pagePath: '',
+        pageUrl: 'https://example.com/',
+        markdownUrl: null,
+        title: 'Home',
+        description: 'Home page',
+      }],
+      [guideFile, {
+        filePath: guideFile,
+        relativePath: 'guides/intro.html',
+        pagePath: 'guides/intro',
+        pageUrl: 'https://example.com/guides/intro/',
+        markdownUrl: 'https://example.com/guides/intro.md',
+        title: 'Intro Guide',
+        description: 'Guide desc',
+      }],
+    ]);
+
+    const fromModels = generateLlmsTxt(
+      { url: 'https://example.com', title: 'Test', description: 'Desc' },
+      [homeFile, guideFile],
+      testDir,
+      { llmsMdMirror: true, pageModels },
+    );
+    expect(fromModels).toContain('- [Home](https://example.com/): Home page');
+    expect(fromModels).toContain('- [Intro Guide](https://example.com/guides/intro.md): Guide desc');
+    expect(fromModels).not.toContain('index.md');
+
+    const filteredWithoutModels = generateLlmsTxt(
+      { url: 'https://example.com', title: 'Test', description: 'Desc' },
+      [homeFile, guideFile, pricingFile],
+      testDir,
+      {
+        llmsMdMirror: true,
+        llmsMdMirrorInclude: ['guides/**'],
+        trailingSlash: 'always',
+      },
+    );
+    expect(filteredWithoutModels).toContain('- [Home](https://example.com/): Home page');
+    expect(filteredWithoutModels).toContain('- [Intro Guide](https://example.com/guides/intro.md): Guide desc');
+    expect(filteredWithoutModels).toContain('- [Pricing](https://example.com/pricing/): Pricing desc');
+    expect(filteredWithoutModels).toContain('[Sitemap](https://example.com/sitemap.xml)');
+    expect(filteredWithoutModels).toContain('[robots.txt](https://example.com/robots.txt)');
+    expect(filteredWithoutModels).not.toContain('pricing.md');
+  });
 });

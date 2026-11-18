@@ -11,10 +11,46 @@ import { collectAuditFacts } from './geoAudit.js';
 
 const DEFAULT_STRIP_PATH_PREFIXES = ['src/pages/'];
 export const DEFAULT_EXCLUDE_PATTERNS = ['404.html', '500.html'];
-const MARKDOWN_STRIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'svg']);
+const MARKDOWN_STRIP_TAGS = new Set([
+  'script',
+  'style',
+  'noscript',
+  'template',
+  'svg',
+  'form',
+  'input',
+  'select',
+  'textarea',
+  'button',
+  'nav',
+]);
 const MARKDOWN_BODY_CHROME_TAGS = new Set(['nav', 'aside', 'footer']);
 const MARKDOWN_BODY_CHROME_ROLES = new Set(['navigation', 'complementary', 'contentinfo']);
 const HEADING_TAG_NAMES = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const BLOCK_LINK_DESCENDANTS = new Set([
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'P', 'DIV', 'UL', 'OL', 'LI',
+  'BLOCKQUOTE', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER',
+  'FIGURE', 'FIGCAPTION', 'TABLE', 'PRE', 'HR',
+  'ASIDE', 'DETAILS', 'SUMMARY', 'DL', 'DT', 'DD',
+]);
+const SPACING_BLOCK_TAGS = new Set([
+  'address', 'article', 'aside', 'audio', 'blockquote', 'body', 'br', 'canvas',
+  'caption', 'center', 'dd', 'details', 'dir', 'div', 'dl', 'dt', 'fieldset',
+  'figcaption', 'figure', 'footer', 'form', 'frameset', 'h1', 'h2', 'h3', 'h4',
+  'h5', 'h6', 'header', 'hgroup', 'hr', 'html', 'isindex', 'li', 'main', 'menu',
+  'nav', 'noframes', 'noscript', 'ol', 'output', 'p', 'pre', 'section',
+  'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul', 'wbr',
+]);
+const CLOSING_NO_SPACE_BEFORE = new Set([
+  ',', '.', ';', ':', '!', '?', ')', ']', '}', '”', '’', '…',
+  '、', '。', '，', '；', '：', '！', '？', '）', '】', '》', '」', '』',
+  '%', '°', '/', '-', '+',
+]);
+const OPENING_NO_SPACE_AFTER = new Set([
+  '(', '[', '{', '“', '‘', '/', '-', '+', '$', '#', '@',
+  '（', '【', '《', '「', '『',
+]);
 const ABSOLUTE_URL_SCHEME_PATTERN = /^[a-z][a-z\d+.-]*:/i;
 const LEADING_H1_PATTERN = /^#(?!#)\s+(.+?)(?:\s+#+)?\s*$/;
 const SITEMAP_MAX_URLS = 50000;
@@ -100,7 +136,325 @@ const turndownService = new TurndownService({
   strongDelimiter: '**',
 });
 
-turndownService.remove(['script', 'style', 'noscript', 'template', 'svg']);
+turndownService.remove([
+  'script',
+  'style',
+  'noscript',
+  'template',
+  'svg',
+  'form',
+  'input',
+  'select',
+  'textarea',
+  'button',
+  'nav',
+]);
+
+const tableCellTextMap = new WeakMap();
+const tableCaptionMap = new WeakMap();
+
+function formatTableCellText(content) {
+  return String(content || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/ {2,}/g, ' ')
+    .trim()
+    .replace(/(\\*)\|/g, (match, slashes) => (
+      slashes.length % 2 === 1 ? match : `${slashes}\\|`
+    ));
+}
+
+function getTableRowCells(trNode) {
+  return Array.from(trNode.childNodes || [])
+    .filter((child) => child.nodeType === 1 && (child.nodeName === 'TH' || child.nodeName === 'TD'))
+    .map((cellNode) => tableCellTextMap.get(cellNode) ?? formatTableCellText(cellNode.textContent));
+}
+
+function collectTableRowGroups(tableNode) {
+  const theadRows = [];
+  const bodyRows = [];
+  const tfootRows = [];
+  const extractRows = (container) => Array.from(container.childNodes || [])
+    .filter((child) => child.nodeType === 1 && child.nodeName === 'TR');
+
+  for (const child of Array.from(tableNode.childNodes || [])) {
+    if (child.nodeType !== 1) continue;
+    if (child.nodeName === 'THEAD') {
+      theadRows.push(...extractRows(child));
+    } else if (child.nodeName === 'TBODY') {
+      bodyRows.push(...extractRows(child));
+    } else if (child.nodeName === 'TFOOT') {
+      tfootRows.push(...extractRows(child));
+    } else if (child.nodeName === 'TR') {
+      bodyRows.push(child);
+    }
+  }
+  return { theadRows, bodyRows, tfootRows };
+}
+
+turndownService.addRule('tableCell', {
+  filter: ['th', 'td'],
+  replacement(content, node) {
+    const cellText = formatTableCellText(content);
+    tableCellTextMap.set(node, cellText);
+    return `| ${cellText} `;
+  },
+});
+
+turndownService.addRule('tableRow', {
+  filter: 'tr',
+  replacement(_content, node) {
+    const cells = getTableRowCells(node);
+    if (cells.length === 0) {
+      return '';
+    }
+    return `| ${cells.join(' | ')} |\n`;
+  },
+});
+
+turndownService.addRule('tableSection', {
+  filter: ['thead', 'tbody', 'tfoot'],
+  replacement(content) {
+    return content;
+  },
+});
+
+turndownService.addRule('tableCaption', {
+  filter: 'caption',
+  replacement(content, node) {
+    const trimmed = content.replace(/\r?\n+/g, ' ').replace(/ {2,}/g, ' ').trim();
+    if (trimmed) {
+      tableCaptionMap.set(node, trimmed);
+    }
+    return '';
+  },
+});
+
+turndownService.addRule('table', {
+  filter: 'table',
+  replacement(_content, node) {
+    const { theadRows, bodyRows, tfootRows } = collectTableRowGroups(node);
+    const rowCells = [...theadRows, ...bodyRows, ...tfootRows]
+      .map((trNode) => getTableRowCells(trNode))
+      .filter((cells) => cells.length > 0);
+
+    if (rowCells.length === 0) {
+      return '';
+    }
+
+    const colCount = Math.max(...rowCells.map((cells) => cells.length), 1);
+    const formatRow = (cells) => {
+      const padded = cells.length < colCount
+        ? [...cells, ...Array(colCount - cells.length).fill('')]
+        : cells;
+      return `| ${padded.join(' | ')} |`;
+    };
+
+    const headerRow = rowCells[0];
+    const separatorRow = Array(colCount).fill('---');
+    const dataRows = rowCells.slice(1);
+    const tableLines = [
+      formatRow(headerRow),
+      formatRow(separatorRow),
+      ...dataRows.map(formatRow),
+    ];
+
+    const captionNode = Array.from(node.childNodes || [])
+      .find((child) => child.nodeType === 1 && child.nodeName === 'CAPTION');
+    const caption = captionNode ? (tableCaptionMap.get(captionNode) || '') : '';
+    const captionPrefix = caption ? `${caption}\n\n` : '';
+
+    return `\n\n${captionPrefix}${tableLines.join('\n')}\n\n`;
+  },
+});
+
+turndownService.addRule('summary', {
+  filter: 'summary',
+  replacement(content) {
+    const text = content.replace(/\r?\n+/g, ' ').replace(/ {2,}/g, ' ').trim();
+    if (!text) {
+      return '';
+    }
+    if (/^#{1,6}\s+/.test(text) || /^\*\*(?:(?!\*\*).)+\*\*$/.test(text)) {
+      return `\n\n${text}\n\n`;
+    }
+    return `\n\n**${text.replace(/(?<!\\)\*\*/g, '')}**\n\n`;
+  },
+});
+
+turndownService.addRule('details', {
+  filter: 'details',
+  replacement(content) {
+    const trimmed = content.replace(/^\n+|\n+$/g, '');
+    return trimmed ? `\n\n${trimmed}\n\n` : '';
+  },
+});
+
+function forEachMarkdownLine(markdownText, onLine) {
+  const lines = String(markdownText || '').split('\n');
+  let activeFence = null;
+
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    const fenceMatch = !activeFence
+      ? trimmed.match(/^(`{3,})[^`]*$|^((?:~{3,}))/)
+      : null;
+    if (!activeFence && fenceMatch) {
+      const fence = fenceMatch[1] || fenceMatch[2];
+      activeFence = fence[0].repeat(fence.length);
+      onLine(line, true);
+      continue;
+    }
+    if (activeFence) {
+      onLine(line, true);
+      const closePattern = new RegExp(`^\\s*${activeFence[0]}{${activeFence.length},}\\s*$`);
+      if (closePattern.test(line)) {
+        activeFence = null;
+      }
+      continue;
+    }
+    onLine(line, false);
+  }
+}
+
+function hasBlockDescendant(node) {
+  if (!node || !Array.isArray(node.childNodes)) {
+    return false;
+  }
+  for (const child of node.childNodes) {
+    const tag = child?.tagName || (child?.nodeType === 1 ? child.nodeName : '');
+    if (typeof tag === 'string' && tag) {
+      if (BLOCK_LINK_DESCENDANTS.has(tag.toUpperCase()) || hasBlockDescendant(child)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function escapeTurndownLinkDestination(destination) {
+  const escaped = String(destination || '').replace(/([<>()])/g, '\\$1');
+  return escaped.indexOf(' ') >= 0 ? `<${escaped}>` : escaped;
+}
+
+function escapeTurndownLinkTitle(title) {
+  const cleaned = title ? String(title).replace(/(\n+\s*)+/g, '\n') : '';
+  return cleaned ? ` "${cleaned.replace(/"/g, '\\"')}"` : '';
+}
+
+function splitMarkdownBlocks(markdownText) {
+  const blocks = [];
+  let current = [];
+
+  forEachMarkdownLine(String(markdownText || '').trim(), (line, inFence) => {
+    if (!inFence && line.trim() === '') {
+      if (current.length > 0) {
+        blocks.push(current.join('\n'));
+        current = [];
+      }
+      return;
+    }
+    current.push(line);
+  });
+
+  if (current.length > 0) {
+    blocks.push(current.join('\n'));
+  }
+  return blocks;
+}
+
+function formatBlockAnchorContent(content, href, titlePart) {
+  const blocks = splitMarkdownBlocks(content);
+  if (blocks.length === 0) {
+    return '';
+  }
+
+  const makeLink = (label) => `[${label}](${href}${titlePart})`;
+
+  const headingIndex = blocks.findIndex((block) => !block.includes('\n') && /^(#{1,6})\s+(.+)$/.test(block));
+  if (headingIndex !== -1) {
+    const match = blocks[headingIndex].match(/^(#{1,6})\s+(.+)$/);
+    const headingText = match[2].trim();
+    if (!headingText.includes('](')) {
+      blocks[headingIndex] = `${match[1]} ${makeLink(headingText)}`;
+    }
+    return `\n\n${blocks.join('\n\n')}\n\n`;
+  }
+
+  const isNonTextBlock = (block) => (
+    /^(?:!\[[^\]]*\]\([^)]*\)\s*)+$/.test(block)
+    || /^(?:\*{3,}|-{3,}|_{3,})$/.test(block)
+    || /^(?:`{3,}|~{3,})/.test(block.trimStart())
+  );
+  const textIndex = blocks.findIndex((block) => !isNonTextBlock(block));
+
+  if (textIndex === -1) {
+    if (/^!\[[^\]]*\]\([^)]*\)$/.test(blocks[0])) {
+      blocks[0] = makeLink(blocks[0]);
+      return `\n\n${blocks.join('\n\n')}\n\n`;
+    }
+    return `\n\n${[makeLink(href), ...blocks].join('\n\n')}\n\n`;
+  }
+
+  const targetBlock = blocks[textIndex];
+  const blockLines = targetBlock.split('\n');
+  const formatLinePrefix = (line) => {
+    const listMatch = line.match(/^(\s*(?:[-*+]|\d+\.)\s+)(.+)$/);
+    if (listMatch) {
+      return `${listMatch[1]}${makeLink(listMatch[2].trim())}`;
+    }
+    const quoteMatch = line.match(/^(\s*>\s+)(.+)$/);
+    if (quoteMatch) {
+      return `${quoteMatch[1]}${makeLink(quoteMatch[2].trim())}`;
+    }
+    return null;
+  };
+
+  if (blockLines.length === 1) {
+    if (/^\|.*\|$/.test(targetBlock.trim())) {
+      blocks.splice(textIndex, 0, makeLink(href));
+    } else {
+      blocks[textIndex] = formatLinePrefix(targetBlock) || makeLink(targetBlock.trim());
+    }
+  } else {
+    const firstLine = blockLines[0].trim();
+    const rest = blockLines.slice(1).join('\n').trim();
+    const prefixed = formatLinePrefix(blockLines[0]);
+    if (prefixed) {
+      blocks[textIndex] = `${prefixed}\n${rest}`;
+    } else if (/^\|.*\|$/.test(firstLine)) {
+      blocks.splice(textIndex, 0, makeLink(href));
+    } else {
+      blocks[textIndex] = `${makeLink(firstLine)}\n\n${rest}`;
+    }
+  }
+
+  return `\n\n${blocks.join('\n\n')}\n\n`;
+}
+
+turndownService.addRule('blockOrMultilineLink', {
+  filter(node, options) {
+    return options.linkStyle === 'inlined' && node.nodeName === 'A' && Boolean(node.getAttribute('href'));
+  },
+  replacement(content, node) {
+    const href = escapeTurndownLinkDestination(node.getAttribute('href'));
+    const titlePart = escapeTurndownLinkTitle(node.getAttribute('title'));
+
+    if (hasBlockDescendant(node)) {
+      return formatBlockAnchorContent(content, href, titlePart);
+    }
+
+    if (content.includes('\n')) {
+      if (/\n\s*\n/.test(content)) {
+        return formatBlockAnchorContent(content, href, titlePart);
+      }
+      const collapsed = content.replace(/\s*\n+\s*/g, ' ').trim();
+      return `[${collapsed}](${href}${titlePart})`;
+    }
+
+    return `[${content}](${href}${titlePart})`;
+  },
+});
 
 /**
  * Find the first element node by tag name in parse5 AST.
@@ -300,18 +654,536 @@ function cloneAstNode(node) {
   return cloned;
 }
 
+function hasAttribute(node, name) {
+  const target = name.toLowerCase();
+  return Boolean(node?.attrs?.some((attribute) => attribute.name.toLowerCase() === target));
+}
+
+function getAstAncestors(node) {
+  const ancestors = [];
+  let current = node?.parentNode;
+  while (current) {
+    if (typeof current.tagName === 'string') {
+      ancestors.unshift(current);
+    }
+    current = current.parentNode;
+  }
+  return ancestors;
+}
+
+function parseSelectorListWithErrors(selectorText) {
+  if (typeof selectorText !== 'string' || selectorText.trim() === '') {
+    return { selectors: [], error: 'Selector must be a non-empty string.' };
+  }
+
+  const str = selectorText.trim();
+  const len = str.length;
+  let pos = 0;
+
+  const skipWs = () => {
+    const start = pos;
+    while (pos < len && /\s/.test(str[pos])) {
+      pos += 1;
+    }
+    return pos - start;
+  };
+
+  const matchPattern = (pattern) => {
+    const match = pattern.exec(str.slice(pos));
+    if (!match) {
+      return null;
+    }
+    pos += match[0].length;
+    return match[0];
+  };
+
+  const parseAttributeSelector = () => {
+    pos += 1; // '['
+    skipWs();
+    const attrName = matchPattern(/^[A-Za-z_:][A-Za-z0-9_.:-]*/);
+    if (!attrName) {
+      throw new Error('Invalid attribute name in selector.');
+    }
+    skipWs();
+    if (pos < len && str[pos] === ']') {
+      pos += 1;
+      return { name: attrName.toLowerCase(), op: null, value: null, caseInsensitive: false };
+    }
+
+    const op = matchPattern(/^(?:\^=|\$=|\*=|=)/);
+    if (!op) {
+      throw new Error(`Expected ']', '=', '^=', '$=', or '*=' in attribute selector for [${attrName}].`);
+    }
+    skipWs();
+
+    let value = '';
+    if (pos < len && (str[pos] === '"' || str[pos] === "'")) {
+      const quote = str[pos];
+      pos += 1;
+      let closed = false;
+      while (pos < len) {
+        const ch = str[pos];
+        if (ch === '\\' && pos + 1 < len) {
+          value += str[pos + 1];
+          pos += 2;
+          continue;
+        }
+        if (ch === quote) {
+          pos += 1;
+          closed = true;
+          break;
+        }
+        value += ch;
+        pos += 1;
+      }
+      if (!closed) {
+        throw new Error(`Unterminated quoted value in attribute selector [${attrName}].`);
+      }
+    } else {
+      const unquoted = matchPattern(/^[A-Za-z0-9_-]+/);
+      if (unquoted === null) {
+        throw new Error(`Expected attribute value in selector [${attrName}${op}...].`);
+      }
+      value = unquoted;
+    }
+
+    skipWs();
+    let caseInsensitive = false;
+    if (pos < len && (str[pos] === 'i' || str[pos] === 'I')) {
+      const nextChar = str[pos + 1];
+      if (nextChar === ']' || /\s/.test(nextChar || '')) {
+        caseInsensitive = true;
+        pos += 1;
+        skipWs();
+      }
+    }
+
+    if (pos >= len || str[pos] !== ']') {
+      throw new Error(`Expected ']' to close attribute selector [${attrName}].`);
+    }
+    pos += 1;
+    return { name: attrName.toLowerCase(), op, value, caseInsensitive };
+  };
+
+  const parseCompound = () => {
+    let tag = null;
+    const ids = [];
+    const classes = [];
+    const attrs = [];
+    let partCount = 0;
+
+    if (pos < len && str[pos] === '*') {
+      tag = '*';
+      pos += 1;
+      partCount += 1;
+    } else if (pos < len && /[A-Za-z]/.test(str[pos])) {
+      tag = matchPattern(/^[A-Za-z][A-Za-z0-9-]*/).toLowerCase();
+      partCount += 1;
+    }
+
+    while (pos < len) {
+      const ch = str[pos];
+      if (ch === '#') {
+        pos += 1;
+        const id = matchPattern(/^[A-Za-z_-][A-Za-z0-9_-]*/);
+        if (!id) {
+          throw new Error('Invalid #id selector.');
+        }
+        ids.push(id);
+        partCount += 1;
+      } else if (ch === '.') {
+        pos += 1;
+        const className = matchPattern(/^[A-Za-z_-][A-Za-z0-9_-]*/);
+        if (!className) {
+          throw new Error('Invalid .class selector.');
+        }
+        classes.push(className);
+        partCount += 1;
+      } else if (ch === '[') {
+        attrs.push(parseAttributeSelector());
+        partCount += 1;
+      } else {
+        break;
+      }
+    }
+
+    if (partCount === 0) {
+      throw new Error(`Expected selector near "${str.slice(pos)}".`);
+    }
+    if (pos < len && !/[\s,>]/.test(str[pos])) {
+      throw new Error(`Unsupported or invalid selector token "${str[pos]}" near "${str.slice(pos)}".`);
+    }
+
+    return { tag, ids, classes, attrs };
+  };
+
+  const parseComplex = () => {
+    skipWs();
+    if (pos >= len || str[pos] === ',' || str[pos] === '>') {
+      throw new Error(`Unexpected token near "${str.slice(pos)}".`);
+    }
+
+    const segments = [{ combinator: null, compound: parseCompound() }];
+    while (pos < len) {
+      const wsCount = skipWs();
+      if (pos >= len || str[pos] === ',') {
+        break;
+      }
+      if (str[pos] === '>') {
+        pos += 1;
+        skipWs();
+        if (pos >= len || str[pos] === ',' || str[pos] === '>') {
+          throw new Error('Expected selector after ">" combinator.');
+        }
+        segments.push({ combinator: '>', compound: parseCompound() });
+      } else if (wsCount > 0) {
+        if (str[pos] === '+' || str[pos] === '~') {
+          throw new Error(`Unsupported combinator "${str[pos]}".`);
+        }
+        segments.push({ combinator: ' ', compound: parseCompound() });
+      } else {
+        throw new Error(`Unexpected token "${str[pos]}" near "${str.slice(pos)}".`);
+      }
+    }
+    return segments;
+  };
+
+  try {
+    const selectors = [];
+    while (pos < len) {
+      selectors.push(parseComplex());
+      skipWs();
+      if (pos < len) {
+        if (str[pos] === ',') {
+          pos += 1;
+          skipWs();
+          if (pos >= len) {
+            throw new Error('Trailing "," in selector list.');
+          }
+        } else {
+          throw new Error(`Unexpected token "${str[pos]}" near "${str.slice(pos)}".`);
+        }
+      }
+    }
+    return { selectors, error: null };
+  } catch (error) {
+    return { selectors: [], error: error.message };
+  }
+}
+
 /**
- * Remove blocked nodes from parse5 AST recursively.
- * @param {object} node - parse5 AST node
- * @param {Set<string>} blockedTagNames - Tag names to strip
+ * Validate `markdownStripSelectors` CSS selector strings.
+ * Supports tag, `*`, `#id`, `.class`, `[attr]`, `[attr=val|^=|$=|*=]` (optional `i`),
+ * compound selectors, descendant (` `), child (`>`), and comma (`,`) lists.
+ *
+ * @param {unknown} selectors - Candidate selector array
+ * @returns {string[]} Validation error messages (`[]` if valid)
  */
-function stripBlockedNodes(node, blockedTagNames) {
-  if (!node || !Array.isArray(node.childNodes)) {
+export function validateMarkdownStripSelectors(selectors) {
+  if (selectors === undefined) {
+    return [];
+  }
+  if (!Array.isArray(selectors)) {
+    return ["Option 'markdownStripSelectors' must be an array of CSS selector strings."];
+  }
+  const errors = [];
+  selectors.forEach((selector, index) => {
+    if (typeof selector !== 'string' || selector.trim() === '') {
+      errors.push(`markdownStripSelectors[${index}] must be a non-empty CSS selector string.`);
+      return;
+    }
+    const { error } = parseSelectorListWithErrors(selector);
+    if (error) {
+      errors.push(`Invalid CSS selector at markdownStripSelectors[${index}] ("${selector}"): ${error}`);
+    }
+  });
+  return errors;
+}
+
+function compileMarkdownStripSelectors(selectors) {
+  if (!Array.isArray(selectors) || selectors.length === 0) {
+    return [];
+  }
+  const compiled = [];
+  for (const selector of selectors) {
+    if (typeof selector !== 'string' || selector.trim() === '') continue;
+    const { selectors: parsed, error } = parseSelectorListWithErrors(selector);
+    if (!error) {
+      compiled.push(...parsed);
+    }
+  }
+  return compiled;
+}
+
+function matchesCompoundSelector(node, compound) {
+  if (!node || typeof node.tagName !== 'string') {
+    return false;
+  }
+  if (compound.tag && compound.tag !== '*' && node.tagName.toLowerCase() !== compound.tag) {
+    return false;
+  }
+  if (compound.ids.length > 0) {
+    const idValue = getAttribute(node, 'id');
+    if (!compound.ids.every((id) => idValue === id)) {
+      return false;
+    }
+  }
+  if (compound.classes.length > 0) {
+    const classTokens = getAttribute(node, 'class').split(/\s+/).filter(Boolean);
+    if (!compound.classes.every((className) => classTokens.includes(className))) {
+      return false;
+    }
+  }
+  for (const attr of compound.attrs) {
+    if (!hasAttribute(node, attr.name)) {
+      return false;
+    }
+    if (attr.op === null) {
+      continue;
+    }
+    const rawActual = getAttribute(node, attr.name);
+    const actual = attr.caseInsensitive ? rawActual.toLowerCase() : rawActual;
+    const expected = attr.caseInsensitive ? attr.value.toLowerCase() : attr.value;
+    if (attr.op === '=') {
+      if (actual !== expected) return false;
+    } else if (attr.op === '^=') {
+      if (!expected || !actual.startsWith(expected)) return false;
+    } else if (attr.op === '$=') {
+      if (!expected || !actual.endsWith(expected)) return false;
+    } else if (attr.op === '*=') {
+      if (!expected || !actual.includes(expected)) return false;
+    }
+  }
+  return true;
+}
+
+function matchesComplexSelectorAt(segments, segmentIndex, node, ancestors, ancestorLimit) {
+  const segment = segments[segmentIndex];
+  if (!matchesCompoundSelector(node, segment.compound)) {
+    return false;
+  }
+  if (segmentIndex === 0) {
+    return true;
+  }
+  if (segment.combinator === '>') {
+    if (ancestorLimit < 0) {
+      return false;
+    }
+    return matchesComplexSelectorAt(
+      segments,
+      segmentIndex - 1,
+      ancestors[ancestorLimit],
+      ancestors,
+      ancestorLimit - 1,
+    );
+  }
+  for (let idx = ancestorLimit; idx >= 0; idx -= 1) {
+    if (matchesComplexSelectorAt(segments, segmentIndex - 1, ancestors[idx], ancestors, idx - 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isDefaultMarkdownNoiseNode(node) {
+  if (!node || typeof node.tagName !== 'string') {
+    return false;
+  }
+  const tagName = node.tagName.toLowerCase();
+  if (MARKDOWN_STRIP_TAGS.has(tagName)) {
+    return true;
+  }
+  if (hasAttribute(node, 'hidden') || hasAttribute(node, 'data-geo-ignore')) {
+    return true;
+  }
+  if (getAttribute(node, 'aria-hidden').trim().toLowerCase() === 'true') {
+    return true;
+  }
+  const roles = getAttribute(node, 'role').toLowerCase().split(/\s+/).filter(Boolean);
+  if (roles.includes('navigation')) {
+    return true;
+  }
+  if (getAttribute(node, 'aria-label').toLowerCase().includes('breadcrumb')) {
+    return true;
+  }
+  return false;
+}
+
+function shouldStripMarkdownNode(node, ancestors, compiledStripSelectors) {
+  if (isDefaultMarkdownNoiseNode(node)) {
+    return true;
+  }
+  return compiledStripSelectors.some((segments) => (
+    matchesComplexSelectorAt(segments, segments.length - 1, node, ancestors, ancestors.length - 1)
+  ));
+}
+
+/**
+ * Strip built-in noise and configured `markdownStripSelectors` nodes from parse5 AST.
+ * Returns true if the root node itself should be dropped.
+ */
+function stripMarkdownNoiseNodes(node, ancestors, compiledStripSelectors) {
+  if (!node || typeof node !== 'object') {
+    return false;
+  }
+  if (typeof node.tagName === 'string' && shouldStripMarkdownNode(node, ancestors, compiledStripSelectors)) {
+    return true;
+  }
+  if (!Array.isArray(node.childNodes)) {
+    return false;
+  }
+
+  const childAncestors = typeof node.tagName === 'string' ? [...ancestors, node] : ancestors;
+  node.childNodes = node.childNodes.filter((childNode) => {
+    if (typeof childNode?.tagName !== 'string') {
+      return true;
+    }
+    return !stripMarkdownNoiseNodes(childNode, childAncestors, compiledStripSelectors);
+  });
+  return false;
+}
+
+function getNodeEdge(node, side) {
+  if (!node || typeof node !== 'object' || node.nodeName === '#comment') {
+    return null;
+  }
+  if (node.nodeName === '#text') {
+    const val = node.value || '';
+    if (!val) return null;
+    const isWs = side === 'left' ? /^\s/.test(val) : /\s$/.test(val);
+    if (isWs) return { kind: 'ws' };
+    return { kind: 'char', char: side === 'left' ? val[0] : val[val.length - 1], text: val };
+  }
+  if (typeof node.tagName === 'string') {
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'br' || tag === 'wbr') return { kind: 'ws' };
+    if (tag === 'img') return { kind: 'img' };
+    const children = node.childNodes || [];
+    const start = side === 'left' ? 0 : children.length - 1;
+    const step = side === 'left' ? 1 : -1;
+    for (let idx = start; idx >= 0 && idx < children.length; idx += step) {
+      const edge = getNodeEdge(children[idx], side);
+      if (edge) return edge;
+    }
+  }
+  return null;
+}
+
+function isBlockElementForSpacing(node) {
+  if (!node || typeof node.tagName !== 'string') {
+    return false;
+  }
+  const tag = node.tagName.toLowerCase();
+  if (SPACING_BLOCK_TAGS.has(tag)) {
+    return true;
+  }
+  if (tag === 'a') {
+    return hasBlockDescendant(node);
+  }
+  return false;
+}
+
+function needsInlineSpaceBetween(prevNode, nextNode) {
+  if (!prevNode || !nextNode) {
+    return false;
+  }
+  if (isBlockElementForSpacing(prevNode) || isBlockElementForSpacing(nextNode)) {
+    return false;
+  }
+  const prevTag = typeof prevNode.tagName === 'string' ? prevNode.tagName.toLowerCase() : '';
+  const nextTag = typeof nextNode.tagName === 'string' ? nextNode.tagName.toLowerCase() : '';
+  if (prevTag === 'sub' || prevTag === 'sup' || nextTag === 'sub' || nextTag === 'sup') {
+    return false;
+  }
+
+  const rightEdge = getNodeEdge(prevNode, 'right');
+  const leftEdge = getNodeEdge(nextNode, 'left');
+  if (!rightEdge || !leftEdge) {
+    return false;
+  }
+  if (rightEdge.kind === 'ws' || leftEdge.kind === 'ws') {
+    return false;
+  }
+
+  if (rightEdge.kind === 'char') {
+    if (OPENING_NO_SPACE_AFTER.has(rightEdge.char)) {
+      return false;
+    }
+    if (rightEdge.char === '"' || rightEdge.char === "'") {
+      const prevChar = rightEdge.text.length >= 2 ? rightEdge.text[rightEdge.text.length - 2] : '';
+      if (!prevChar || /\s/.test(prevChar)) {
+        return false;
+      }
+    }
+  }
+
+  if (leftEdge.kind === 'char') {
+    if (CLOSING_NO_SPACE_BEFORE.has(leftEdge.char)) {
+      return false;
+    }
+    if (leftEdge.char === '"' || leftEdge.char === "'") {
+      const nextChar = leftEdge.text.length >= 2 ? leftEdge.text[1] : '';
+      if (!nextChar || /[\s.,;:!?)\]}'"”’]|(?:^(?:s|t|re|ll|ve|d|m)\b)/i.test(leftEdge.text.slice(1))) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Prevent text gluing between adjacent inline elements/text nodes without
+ * separating whitespace, while preserving pre/code whitespace and punctuation.
+ */
+function insertAdjacentInlineSpacing(node) {
+  if (!node || typeof node !== 'object' || !Array.isArray(node.childNodes)) {
+    return;
+  }
+  const tag = typeof node.tagName === 'string' ? node.tagName.toLowerCase() : '';
+  if (tag === 'pre' || tag === 'code') {
     return;
   }
 
-  node.childNodes = node.childNodes.filter((childNode) => !blockedTagNames.has(childNode.tagName));
-  node.childNodes.forEach((childNode) => stripBlockedNodes(childNode, blockedTagNames));
+  if (tag === 'details') {
+    const cleanedChildren = [];
+    let sawSummary = false;
+    for (const child of node.childNodes) {
+      if (child.nodeName === '#text') {
+        if (/^\s*$/.test(child.value || '')) {
+          continue;
+        }
+        if (sawSummary || cleanedChildren.length === 0) {
+          child.value = (child.value || '').replace(/^\s+/, '');
+        }
+      } else if (typeof child.tagName === 'string' && child.tagName.toLowerCase() === 'summary') {
+        sawSummary = true;
+      }
+      cleanedChildren.push(child);
+    }
+    node.childNodes = cleanedChildren;
+  }
+
+  for (const child of node.childNodes) {
+    insertAdjacentInlineSpacing(child);
+  }
+
+  const nextChildren = [];
+  let prevMeaningful = null;
+
+  for (const child of node.childNodes) {
+    const isComment = child.nodeName === '#comment';
+    const hasContent = !isComment && (isBlockElementForSpacing(child) || getNodeEdge(child, 'left') !== null);
+    if (hasContent && prevMeaningful && needsInlineSpaceBetween(prevMeaningful, child)) {
+      nextChildren.push({ nodeName: '#text', value: ' ' });
+    }
+    nextChildren.push(child);
+    if (hasContent) {
+      prevMeaningful = child;
+    }
+  }
+
+  node.childNodes = nextChildren;
 }
 
 
@@ -617,6 +1489,83 @@ export function matchGlob(pattern, str) {
 }
 
 /**
+ * Match a page against glob patterns (`llmsMdMirrorInclude` / `llmsMdMirrorExclude` / etc.).
+ * Normalizes leading `/` on patterns, handles root patterns (`''` / `'/'` / `'index'`),
+ * and matches directory-index pages against `'dir/**'` (so `'guides/**'` matches `guides`).
+ *
+ * @param {string[]} patterns - Pattern list
+ * @param {{pagePath?: string, relativePath?: string}} [page={}] - Page paths
+ * @returns {boolean} True when any pattern matches
+ */
+export function matchesPagePatterns(patterns, page = {}) {
+  if (!Array.isArray(patterns) || patterns.length === 0) {
+    return false;
+  }
+
+  const hasPagePath = page?.pagePath !== undefined && page?.pagePath !== null;
+  const hasRelativePath = page?.relativePath !== undefined && page?.relativePath !== null;
+  const normPagePath = hasPagePath ? normalizeFilePath(page.pagePath) : '';
+  const normRelativePath = hasRelativePath ? normalizeFilePath(page.relativePath) : '';
+
+  for (const rawPattern of patterns) {
+    if (typeof rawPattern !== 'string') {
+      continue;
+    }
+    const clean = rawPattern.trim().replace(/^\/+/, '');
+    if (clean === '' || clean === 'index') {
+      if (
+        (hasPagePath && normPagePath === '')
+        || normRelativePath === 'index.html'
+        || (!hasPagePath && !hasRelativePath)
+      ) {
+        return true;
+      }
+      continue;
+    }
+
+    if (hasPagePath && matchGlob(clean, normPagePath)) {
+      return true;
+    }
+    if (hasRelativePath && matchGlob(clean, normRelativePath)) {
+      return true;
+    }
+    if (clean.endsWith('/**')) {
+      const dirPrefix = clean.slice(0, -3);
+      if (hasPagePath && normPagePath === dirPrefix) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Determine whether a Markdown mirror should be generated for a given page.
+ *
+ * @param {{pagePath?: string, relativePath?: string}} page - Page paths
+ * @param {object} [options={}] - Generator options
+ * @returns {boolean} True if mirror should be emitted
+ */
+export function shouldGenerateMarkdownMirror(page, options = {}) {
+  if (options?.llmsMdMirror === false) {
+    return false;
+  }
+  if (Array.isArray(options?.llmsMdMirrorInclude)) {
+    if (!matchesPagePatterns(options.llmsMdMirrorInclude, page)) {
+      return false;
+    }
+  }
+  if (
+    Array.isArray(options?.llmsMdMirrorExclude)
+    && matchesPagePatterns(options.llmsMdMirrorExclude, page)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Classify HTML files as included or excluded without logging.
  * Excluded entries carry the reason so callers can aggregate diagnostics.
  * @param {string[]} htmlFiles - Absolute HTML file paths
@@ -780,10 +1729,11 @@ export function normalizeRouteBasePath(value, context = {}) {
  * Compose page URL by joining site URL + route base path + page path.
  * @param {string} siteUrl - Site URL in metadata
  * @param {string} pagePath - Page path without leading slash
- * @param {string} routeBasePath - Optional route base path
- * @returns {string} Final absolute URL without trailing slash
+ * @param {string} [routeBasePath=''] - Optional route base path
+ * @param {object} [urlOptions={}] - URL formatting options (`trailingSlash`)
+ * @returns {string} Final absolute URL
  */
-export function composePageUrl(siteUrl, pagePath, routeBasePath = '') {
+export function composePageUrl(siteUrl, pagePath, routeBasePath = '', urlOptions = {}) {
   const normalizedBasePath = normalizeRouteBasePath(routeBasePath)
     .replace(/^\/+|\/+$/g, '');
   const normalizedPagePath = normalizeFilePath(pagePath);
@@ -792,8 +1742,12 @@ export function composePageUrl(siteUrl, pagePath, routeBasePath = '') {
     .join('/');
 
   const baseUrl = siteUrl.endsWith('/') ? siteUrl : `${siteUrl}/`;
+  const useTrailingSlash = urlOptions?.trailingSlash === 'always';
 
   if (!joinedPath) {
+    if (useTrailingSlash) {
+      return baseUrl;
+    }
     return siteUrl.endsWith('/') ? siteUrl.slice(0, -1) : siteUrl;
   }
 
@@ -806,10 +1760,17 @@ export function composePageUrl(siteUrl, pagePath, routeBasePath = '') {
     .map((segment) => segment.replace(/#/g, '%23').replace(/\?/g, '%3F'))
     .join('/');
 
-  return new URL(`/${safePath}`, baseUrl).toString().replace(/\/$/, '');
+  const rawUrl = new URL(`/${safePath}`, baseUrl).toString().replace(/\/$/, '');
+  if (useTrailingSlash) {
+    const lastSegment = segments[segments.length - 1] || '';
+    if (!normalizedPagePath || !/\.[a-z0-9]+$/i.test(lastSegment)) {
+      return `${rawUrl}/`;
+    }
+  }
+  return rawUrl;
 }
 
-function composePublicFileUrl(siteUrl, filePath, routeBasePath = '') {
+function composePublicFileUrl(siteUrl, filePath, routeBasePath = '', urlOptions = {}) {
   const raw = String(filePath ?? '').trim();
   if (!raw || /[\u0000-\u001f\u007f]/.test(raw) || raw.startsWith('//')) {
     throw new Error(`Invalid public file URL: "${String(filePath ?? '')}".`);
@@ -828,7 +1789,7 @@ function composePublicFileUrl(siteUrl, filePath, routeBasePath = '') {
     return raw;
   }
 
-  return composePageUrl(siteUrl, raw, routeBasePath);
+  return composePageUrl(siteUrl, raw, routeBasePath, urlOptions);
 }
 
 function collectHtmlFilesRecursive(dirPath, htmlFiles) {
@@ -905,28 +1866,14 @@ export function resolvePagePath(relativePath, options = {}) {
 
 function normalizeMarkdownOutput(markdownContent) {
   const raw = String(markdownContent || '').replace(/\r\n/g, '\n');
-  const lines = raw.split('\n');
   const normalizedLines = [];
-  let activeFence = null;
   let consecutiveBlank = 0;
 
-  for (const line of lines) {
-    const trimmed = line.trimStart();
-    const fenceMatch = trimmed.match(/^(`{3,}|~{3,})/);
-    if (!activeFence && fenceMatch) {
-      activeFence = fenceMatch[1][0].repeat(fenceMatch[1].length);
+  forEachMarkdownLine(raw, (line, inFence) => {
+    if (inFence) {
       consecutiveBlank = 0;
       normalizedLines.push(line);
-      continue;
-    }
-
-    if (activeFence) {
-      normalizedLines.push(line);
-      const closePattern = new RegExp(`^\\s*${activeFence[0]}{${activeFence.length},}\\s*$`);
-      if (closePattern.test(line)) {
-        activeFence = null;
-      }
-      continue;
+      return;
     }
 
     const cleanLine = line
@@ -939,12 +1886,12 @@ function normalizeMarkdownOutput(markdownContent) {
       if (consecutiveBlank <= 1) {
         normalizedLines.push('');
       }
-      continue;
+      return;
     }
 
     consecutiveBlank = 0;
     normalizedLines.push(cleanLine);
-  }
+  });
 
   return normalizedLines.join('\n').trim();
 }
@@ -1003,18 +1950,23 @@ function rewriteImageSources(node, baseUrl) {
  * @param {string} [options.baseUrl] - Public URL of the built HTML file
  * @returns {string} Markdown formatted content
  */
-function convertHtmlAstToMarkdown(documentAst, { baseUrl = '' } = {}) {
+function convertHtmlAstToMarkdown(documentAst, { baseUrl = '', markdownStripSelectors = [] } = {}) {
   const effectiveBaseUrl = resolveEffectiveBaseUrl(documentAst, baseUrl);
+  const compiledStripSelectors = compileMarkdownStripSelectors(markdownStripSelectors);
 
   const convertRootNode = (rootNode, bodyFallback) => {
+    const rootAncestors = getAstAncestors(rootNode);
     const workingRoot = cloneAstNode(rootNode);
-    stripBlockedNodes(workingRoot, MARKDOWN_STRIP_TAGS);
+    if (stripMarkdownNoiseNodes(workingRoot, rootAncestors, compiledStripSelectors)) {
+      return '';
+    }
     if (bodyFallback) {
       stripBodyChromeNodes(workingRoot);
     }
     if (effectiveBaseUrl) {
       rewriteImageSources(workingRoot, effectiveBaseUrl);
     }
+    insertAdjacentInlineSpacing(workingRoot);
 
     const cleanedHtml = (serialize(workingRoot) || '').trim();
     if (!cleanedHtml) {
@@ -1063,10 +2015,31 @@ function normalizeInlineText(value) {
     .trim();
 }
 
+function downgradeRemainingAtxH1(markdownBody) {
+  const output = [];
+
+  forEachMarkdownLine(markdownBody, (line, inFence) => {
+    if (inFence) {
+      output.push(line);
+      return;
+    }
+
+    const h1Match = line.match(/^(\s{0,3})#(?!#)(\s+.*)$/);
+    if (h1Match) {
+      output.push(`${h1Match[1]}##${h1Match[2]}`);
+    } else {
+      output.push(line);
+    }
+  });
+
+  return output.join('\n');
+}
+
 /**
  * Compose a mirror with a title heading, description blockquote, and the
  * content extracted from the built page. A leading H1 identical to the title
- * is removed so the mirror does not repeat the same heading.
+ * is removed so the mirror does not repeat the same heading, and any remaining
+ * ATX `# ` headings outside fenced code blocks are downgraded to `## `.
  *
  * @param {object} page - Page model with title, description, and markdown
  * @returns {string} Mirror body (without the ownership marker)
@@ -1092,6 +2065,10 @@ export function composeMarkdownMirrorContent({ title, description, markdown } = 
         body = lines.join('\n').trim();
       }
     }
+
+    if (body) {
+      body = downgradeRemainingAtxH1(body).trim();
+    }
   }
 
   const parts = [];
@@ -1111,7 +2088,12 @@ export function composeMarkdownMirrorContent({ title, description, markdown } = 
   return parts.join('\n\n');
 }
 
-export function analyzeHtmlPage(htmlContent, { audit = false, baseUrl = '', skipMarkdown = false } = {}) {
+export function analyzeHtmlPage(htmlContent, {
+  audit = false,
+  baseUrl = '',
+  skipMarkdown = false,
+  markdownStripSelectors = [],
+} = {}) {
   const source = String(htmlContent || '');
   const documentAst = parse(source);
   const titleNode = findFirstNodeByTagName(documentAst, 'title');
@@ -1125,10 +2107,14 @@ export function analyzeHtmlPage(htmlContent, { audit = false, baseUrl = '', skip
   // Declared alternates are cheap to collect here and drive per-page hreflang
   // in the sitemap when `hreflangFromHtml` is enabled.
   const hreflang = [];
+  let canonicalHref = '';
   for (const link of linkNodes) {
     const relTokens = getAttribute(link, 'rel').toLowerCase().split(/\s+/).filter(Boolean);
-    const languageTag = getAttribute(link, 'hreflang').trim();
     const href = getAttribute(link, 'href').trim();
+    if (!canonicalHref && relTokens.includes('canonical') && href) {
+      canonicalHref = href;
+    }
+    const languageTag = getAttribute(link, 'hreflang').trim();
     if (!relTokens.includes('alternate') || !languageTag || !href) continue;
     hreflang.push({ hreflang: languageTag, href });
   }
@@ -1140,10 +2126,13 @@ export function analyzeHtmlPage(htmlContent, { audit = false, baseUrl = '', skip
     description: getAttribute(descriptionNode, 'content').trim(),
     lang: getAttribute(htmlNode, 'lang').trim(),
     noindex,
+    canonicalHref,
     hreflang,
     documentBaseUrl,
     ...(audit ? { audit: collectAuditFacts(documentAst) } : {}),
-    markdown: skipMarkdown ? '' : convertHtmlAstToMarkdown(documentAst, { baseUrl }),
+    markdown: (skipMarkdown || noindex)
+      ? ''
+      : convertHtmlAstToMarkdown(documentAst, { baseUrl, markdownStripSelectors }),
   };
 }
 
@@ -1432,7 +2421,7 @@ export function dedupeHtmlFilesByPagePath(htmlFiles, distDir, options = {}) {
  */
 export function extractPageMetadata(htmlContent, options = {}) {
   const { includeLang = false } = options;
-  const analyzed = analyzeHtmlPage(htmlContent);
+  const analyzed = analyzeHtmlPage(htmlContent, { skipMarkdown: true });
   const { title, description } = analyzed;
 
   const result = { title, description };
@@ -1491,7 +2480,7 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
       ? pageModel.pagePath
       : resolvePagePath(relativePath, { ...options, prettyUrls });
 
-    const loc = pageModel?.pageUrl || composePageUrl(baseUrl, pagePath, options.routeBasePath);
+    const loc = pageModel?.pageUrl || composePageUrl(baseUrl, pagePath, options.routeBasePath, options);
     // pageModel.mtime already contains the lastmodResolver result and the
     // configured strategy. Do not short-circuit on strategy 'none' here:
     // a resolver is allowed to provide timestamps with the default strategy.
@@ -1562,6 +2551,7 @@ export function generateSitemap(baseUrl, htmlFiles, distDir, currentDate, option
       baseUrl,
       lastmodStrategy === 'none' ? null : buildDate,
       options.routeBasePath,
+      options,
     );
 
     if (Buffer.byteLength(sitemapIndexContent, 'utf-8') > SITEMAP_MAX_BYTES) {
@@ -1667,9 +2657,9 @@ function splitSitemap(urlEntries, options = {}) {
  * @param {string|null} lastmod - ISO 8601 timestamp for lastmod, or null to omit
  * @returns {string} sitemap_index.xml content
  */
-function generateSitemapIndex(sitemapFiles, baseUrl, lastmod, routeBasePath = '') {
+function generateSitemapIndex(sitemapFiles, baseUrl, lastmod, routeBasePath = '', urlOptions = {}) {
   const sitemapEntries = sitemapFiles.map((filename) => {
-    const loc = composePageUrl(baseUrl, filename, routeBasePath);
+    const loc = composePageUrl(baseUrl, filename, routeBasePath, urlOptions);
     return `  <sitemap>
     <loc>${escapeXml(loc)}</loc>${lastmod ? `
     <lastmod>${escapeXml(lastmod)}</lastmod>` : ''}
@@ -1946,7 +2936,7 @@ function parseTimestampMs(value) {
  * @param {string} buildDate - ISO 8601 build date
  * @returns {string} feed.xml content
  */
-export function generateFeedXml(pages, siteMetadata, buildDate) {
+export function generateFeedXml(pages, siteMetadata, buildDate, options = {}) {
   const { url, title, description, lang } = siteMetadata;
   const feedUrl = siteMetadata.feedUrl || new URL('feed.xml', `${url.replace(/\/+$/, '')}/`).toString();
 
@@ -1959,6 +2949,9 @@ export function generateFeedXml(pages, siteMetadata, buildDate) {
     }
     return compareCodeUnits(a?.url, b?.url);
   });
+  const feedPages = Number.isInteger(options?.maxItems) && options.maxItems > 0
+    ? sortedPages.slice(0, options.maxItems)
+    : sortedPages;
 
   const lines = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
@@ -1973,7 +2966,7 @@ export function generateFeedXml(pages, siteMetadata, buildDate) {
   lines.push('');
 
   // Generate item elements for each page
-  sortedPages.forEach((page) => {
+  feedPages.forEach((page) => {
     lines.push('    <item>');
     lines.push(`      <title>${escapeXml(page.title)}</title>`);
     lines.push(`      <link>${escapeXml(page.url)}</link>`);
@@ -2043,11 +3036,11 @@ export function generateLlmsTxt(siteMetadata, htmlFiles, distDir, options = {}) 
   if (options.includeOptional !== false) {
     const optionalLinks = [];
     if (options.includeSitemap !== false) {
-      const sitemapHref = composePublicFileUrl(url, options.sitemapUrl || 'sitemap.xml', options.routeBasePath);
+      const sitemapHref = composePublicFileUrl(url, options.sitemapUrl || 'sitemap.xml', options.routeBasePath, options);
       optionalLinks.push(`- [Sitemap](${escapeMarkdownLinkDestination(sitemapHref)}): Complete list of all indexed pages`);
     }
     if (options.includeRobots ?? (options.generateRobots !== false)) {
-      const robotsHref = composePageUrl(url, 'robots.txt');
+      const robotsHref = composePageUrl(url, 'robots.txt', '', options);
       optionalLinks.push(`- [robots.txt](${escapeMarkdownLinkDestination(robotsHref)}): Search engine crawling instructions`);
     }
     if (optionalLinks.length > 0) {
@@ -2071,15 +3064,20 @@ function collectLlmsPages(siteMetadata, htmlFiles, distDir, options = {}) {
     const pagePath = pageModel && pageModel.pagePath !== undefined
       ? pageModel.pagePath
       : resolvePagePath(relativePath, { ...options, prettyUrls });
-    const pageUrl = pageModel?.markdownUrl || (
-      llmsMdMirror
+    const resolveMirrorUrl = () => (
+      llmsMdMirror && shouldGenerateMarkdownMirror({ pagePath, relativePath }, options)
         ? composePageUrl(
           url,
           resolveMarkdownMirrorPath(pagePath, options.llmsMdMirrorStyle),
           options.routeBasePath,
+          options,
         )
-        : (pageModel?.pageUrl || composePageUrl(url, pagePath, options.routeBasePath))
+        : null
     );
+    const mirrorUrl = pageModel
+      ? (pageModel.markdownUrl === null ? null : (pageModel.markdownUrl || resolveMirrorUrl()))
+      : resolveMirrorUrl();
+    const pageUrl = mirrorUrl || pageModel?.pageUrl || composePageUrl(url, pagePath, options.routeBasePath, options);
     const page = {
       filePath,
       relativePath,
@@ -2196,7 +3194,7 @@ export function generateRobotsTxt(baseUrl, options = {}) {
   if (options.includeSitemap !== false) {
     lines.push(
       '',
-      `Sitemap: ${composePublicFileUrl(baseUrl, options.sitemapUrl || 'sitemap.xml', options.routeBasePath)}`,
+      `Sitemap: ${composePublicFileUrl(baseUrl, options.sitemapUrl || 'sitemap.xml', options.routeBasePath, options)}`,
     );
   }
 
