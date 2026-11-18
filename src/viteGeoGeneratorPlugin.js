@@ -124,14 +124,20 @@ function hasAstroVitePlugin(config) {
   );
 }
 
+function isServerEnvironmentConfig(config) {
+  return config?.consumer === 'server'
+    || (config?.consumer !== 'client' && Boolean(config?.build?.ssr));
+}
+
 function hasMultiEnvClientBuild(environment, config, { allowSsrFlag = false } = {}) {
   const topEnvironments = environment?.getTopLevelConfig?.().environments ?? config?.environments;
   if (!topEnvironments || typeof topEnvironments !== 'object') {
     return false;
   }
-  return Object.values(topEnvironments).some((envConfig) => (
+  return Object.entries(topEnvironments).some(([envName, envConfig]) => (
     envConfig
     && envConfig !== config
+    && (!environment?.name || envName !== environment.name)
     && envConfig.consumer === 'client'
     && (allowSsrFlag || !envConfig.build?.ssr)
   ));
@@ -177,10 +183,18 @@ export function createGeoGeneratorPlugin(options = {}) {
     name: 'geo-generator',
     apply: 'build',
     enforce: 'post',
+    hooks: {
+      'astro:config:setup'(context = {}) {
+        const message = "Detected the Vite plugin export from 'vite-plugin-geo' inside Astro integrations. "
+          + "Change the import to: import geo from 'vite-plugin-geo/astro'.";
+        context?.logger?.error?.(message);
+        throw new Error(message);
+      },
+    },
 
     applyToEnvironment(environment) {
       const envConfig = environment?.config;
-      const isServerEnv = envConfig?.consumer === 'server' || Boolean(envConfig?.build?.ssr);
+      const isServerEnv = isServerEnvironmentConfig(envConfig);
       if (!isServerEnv) {
         return true;
       }
@@ -220,7 +234,7 @@ export function createGeoGeneratorPlugin(options = {}) {
 
         if (htmlAssets.length === 0) {
           const isAstro = hasAstroVitePlugin(resolvedConfig) || isAstroProject(projectRoot);
-          const isServerEnv = resolvedConfig?.consumer === 'server' || Boolean(resolvedConfig?.build?.ssr);
+          const isServerEnv = isServerEnvironmentConfig(resolvedConfig);
           if (isServerEnv && hasMultiEnvClientBuild(this.environment, resolvedConfig, { allowSsrFlag: isAstro })) {
             return;
           }

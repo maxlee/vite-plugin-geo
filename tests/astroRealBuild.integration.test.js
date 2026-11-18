@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { pathToFileURL } from 'url';
@@ -217,5 +217,66 @@ describe('real Astro builds', () => {
     expect(readFileSync(join(distDir, 'sitemap.xml'), 'utf-8')).toContain('<loc>https://example.com/about.html</loc>');
     expect(readFileSync(join(distDir, 'llms.txt'), 'utf-8')).toContain('https://example.com/about.html');
   }, 30_000);
+
+  it("fails fast at astro:config:setup when the default Vite export from 'vite-plugin-geo' is passed to Astro integrations", async () => {
+    const root = join(fixtureRoot, 'astro-misused-default-export');
+    const defaultEntryUrl = pathToFileURL(join(process.cwd(), 'src', 'index.js')).href;
+    writeFixture(root, 'package.json', JSON.stringify({ name: 'astro-misused-default-export' }));
+    writeFixture(root, 'src/pages/index.astro', '<html lang="en"><head><title>Home</title></head><body><h1>Home</h1></body></html>');
+    writeFixture(root, 'astro.config.mjs', `
+      import { defineConfig } from 'astro/config';
+      import geo from ${JSON.stringify(defaultEntryUrl)};
+      export default defineConfig({
+        site: 'https://example.com',
+        integrations: [geo()],
+      });
+    `);
+
+    let caughtError;
+    try {
+      await buildAstro({ root, logLevel: 'silent' });
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(caughtError).toBeDefined();
+    expect(caughtError.message).toContain('vite-plugin-geo/astro');
+    expect(caughtError.message).toContain("import geo from 'vite-plugin-geo/astro'");
+    expect(existsSync(join(root, 'dist'))).toBe(false);
+  }, 20_000);
+
+  it("keeps the generateBundle warning when default 'vite-plugin-geo' is placed inside Astro vite.plugins", async () => {
+    const root = join(fixtureRoot, 'astro-misused-vite-plugins');
+    const defaultEntryUrl = pathToFileURL(join(process.cwd(), 'src', 'index.js')).href;
+    writeFixture(root, 'package.json', JSON.stringify({
+      name: 'astro-misused-vite-plugins',
+      dependencies: { astro: '^7.0.0' },
+    }));
+    writeFixture(root, 'src/pages/index.astro', '<html lang="en"><head><title>Home</title></head><body><h1>Home</h1></body></html>');
+    writeFixture(root, 'astro.config.mjs', `
+      import { defineConfig } from 'astro/config';
+      import geo from ${JSON.stringify(defaultEntryUrl)};
+      export default defineConfig({
+        site: 'https://example.com',
+        vite: {
+          plugins: [geo()],
+        },
+      });
+    `);
+
+    const warnings = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args) => warnings.push(args.join(' ')));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await buildAstro({ root, logLevel: 'silent' });
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+
+    expect(warnings.some((message) => message.includes('Move this plugin from vite.plugins to integrations') && message.includes('vite-plugin-geo/astro'))).toBe(true);
+    expect(existsSync(join(root, 'dist', 'index.html'))).toBe(true);
+    expect(existsSync(join(root, 'dist', 'sitemap.xml'))).toBe(false);
+  }, 20_000);
 
 });

@@ -2,7 +2,9 @@ import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { pathToFileURL } from 'url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { build as buildVite7 } from 'vite7';
+import { build as buildVite8 } from 'vite8';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   resolveSiteMetadataFromBuildOutput,
 } from '../src/geoMetadataResolver.js';
@@ -876,4 +878,60 @@ describe('viteGeoGeneratorPlugin metadata extraction', () => {
 
     expect(warnings.filter((message) => message.includes('vite-plugin-geo/astro'))).toHaveLength(1);
   });
+
+  it("mounts astro:config:setup guard unconditionally that logs and throws 'vite-plugin-geo/astro' guidance", () => {
+    const plugin = createGeoGeneratorPlugin();
+    const setupHook = plugin.hooks?.['astro:config:setup'];
+    expect(typeof setupHook).toBe('function');
+
+    const errorSpy = vi.fn();
+    expect(() => setupHook({ logger: { error: errorSpy } })).toThrow(
+      /Detected the Vite plugin export from 'vite-plugin-geo' inside Astro integrations[\s\S]*vite-plugin-geo\/astro/,
+    );
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0][0]).toContain("import geo from 'vite-plugin-geo/astro'");
+
+    expect(() => setupHook()).toThrow(/vite-plugin-geo\/astro/);
+    expect(() => setupHook(undefined)).toThrow(/vite-plugin-geo\/astro/);
+    expect(() => setupHook(null)).toThrow(/vite-plugin-geo\/astro/);
+  });
+
+  it.each([
+    ['Vite 7', buildVite7],
+    ['Vite 8', buildVite8],
+  ])('still completes %s builds cleanly with the Astro guard hook mounted', async (label, viteBuild) => {
+    const root = join(fixtureRoot, `guard-${label.toLowerCase().replace(/\s+/g, '-')}`);
+    const distDir = join(root, 'dist');
+    writeFixtureFile(
+      join(`guard-${label.toLowerCase().replace(/\s+/g, '-')}`, 'package.json'),
+      JSON.stringify({ name: 'vite-guard-compat', domain: 'https://example.com' }),
+    );
+    writeFixtureFile(
+      join(`guard-${label.toLowerCase().replace(/\s+/g, '-')}`, 'index.html'),
+      '<!doctype html><html lang="en"><head><title>Guard Compat</title><meta name="description" content="Vite guard compat"></head><body><h1>Home</h1></body></html>',
+    );
+
+    const plugin = createGeoGeneratorPlugin({
+      packageJsonPath: join(root, 'package.json'),
+      llmsMdMirror: false,
+      generateFeed: false,
+      audit: false,
+    });
+    expect(typeof plugin.hooks?.['astro:config:setup']).toBe('function');
+
+    await viteBuild({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [plugin],
+      build: {
+        outDir: distDir,
+        emptyOutDir: true,
+      },
+    });
+
+    expect(existsSync(join(distDir, 'sitemap.xml'))).toBe(true);
+    expect(existsSync(join(distDir, 'robots.txt'))).toBe(true);
+    expect(existsSync(join(distDir, 'llms.txt'))).toBe(true);
+  }, 20_000);
 });

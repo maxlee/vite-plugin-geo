@@ -128,20 +128,38 @@ function resolveRedirectExcludePatterns(distDir, redirectRoutes, assets) {
   return Array.from(patterns);
 }
 
+function resolveAstroTrailingSlash(trailingSlash) {
+  switch (trailingSlash) {
+    case 'always':
+      return 'always';
+    case 'never':
+      return 'never';
+    case 'ignore':
+      return 'preserve';
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Create the Astro integration for vite-plugin-geo.
  * GEO files are generated only after Astro has written its final HTML output.
  *
  * @param {object} [options={}] - GEO generator options
+ * @param {object} [runtime={}] - Optional internal runtime overrides
  * @returns {import('astro').AstroIntegration}
  */
-export function createAstroGeoIntegration(options = {}) {
+export function createAstroGeoIntegration(options = {}, runtime = {}) {
   validateGeoOptions(options);
+  const runGenerate = typeof runtime?.runGenerate === 'function'
+    ? runtime.runGenerate
+    : runSeoCliGenerate;
 
   let projectRoot = process.cwd();
   let astroSite;
   let astroBase = '';
   let astroBuildFormat;
+  let astroTrailingSlash;
   let buildOutput = 'static';
   let redirectRoutes = [];
   let pendingSitemapOrderWarning = '';
@@ -164,6 +182,7 @@ export function createAstroGeoIntegration(options = {}) {
         astroSite = config.site;
         astroBase = config.base;
         astroBuildFormat = config.build?.format;
+        astroTrailingSlash = config.trailingSlash;
         buildOutput = resolvedBuildOutput;
         pendingSitemapOrderWarning = '';
 
@@ -208,10 +227,14 @@ export function createAstroGeoIntegration(options = {}) {
         const resolvedPrettyUrls = options.prettyUrls !== undefined
           ? options.prettyUrls
           : (astroBuildFormat === 'file' ? false : undefined);
+        const resolvedTrailingSlash = options.trailingSlash !== undefined
+          ? options.trailingSlash
+          : resolveAstroTrailingSlash(astroTrailingSlash);
 
         const generationOptions = {
           ...options,
           ...(resolvedPrettyUrls !== undefined ? { prettyUrls: resolvedPrettyUrls } : {}),
+          ...(resolvedTrailingSlash !== undefined ? { trailingSlash: resolvedTrailingSlash } : {}),
           ...(mergedExcludePatterns !== undefined ? { excludePatterns: mergedExcludePatterns } : {}),
           distDir,
           routeBasePath: typeof options.routeBasePath === 'string'
@@ -227,7 +250,7 @@ export function createAstroGeoIntegration(options = {}) {
           }
         }
 
-        await runSeoCliGenerate(generationOptions, {
+        await runGenerate(generationOptions, {
           cwd: projectRoot,
           logger: createAstroLogger(logger),
         });

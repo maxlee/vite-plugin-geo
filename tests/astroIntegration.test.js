@@ -301,4 +301,126 @@ describe('Astro integration', () => {
     expect(sitemap).not.toContain('<loc>https://site.example/old</loc>');
     expect(sitemap).not.toContain('<loc>https://site.example/legacy</loc>');
   });
+
+  it.each([
+    ['always', 'always'],
+    ['never', 'never'],
+    ['ignore', 'preserve'],
+  ])("syncs Astro config.trailingSlash '%s' to '%s' when options.trailingSlash is omitted", async (astroTrailingSlash, expectedTrailingSlash) => {
+    const { default: geo } = await loadAstroEntry();
+    writeFixtureFile('dist/index.html', '<!doctype html><html><head><title>Home</title></head><body></body></html>');
+    const { logger } = createLogger();
+    let capturedOptions;
+    const integration = geo(
+      { domain: 'https://site.example', llmsMdMirror: false, generateFeed: false },
+      {
+        runGenerate(generationOptions) {
+          capturedOptions = generationOptions;
+        },
+      },
+    );
+
+    await integration.hooks['astro:config:done']({
+      config: {
+        root: pathToFileURL(`${fixtureRoot}/`),
+        site: new URL('https://site.example'),
+        base: '/',
+        trailingSlash: astroTrailingSlash,
+      },
+      buildOutput: 'static',
+      logger,
+    });
+    await integration.hooks['astro:build:done']({
+      dir: pathToFileURL(`${join(fixtureRoot, 'dist')}/`),
+      pages: [],
+      assets: new Map(),
+      logger,
+    });
+
+    expect(capturedOptions?.trailingSlash).toBe(expectedTrailingSlash);
+
+    // Also verify the real generation flow completes cleanly when Astro provides trailingSlash.
+    await runIntegration(
+      { domain: 'https://site.example', llmsMdMirror: false, generateFeed: false },
+      { base: '/', trailingSlash: astroTrailingSlash },
+    );
+    expect(existsSync(join(fixtureRoot, 'dist', 'sitemap.xml'))).toBe(true);
+  });
+
+  it('omits trailingSlash when neither options.trailingSlash nor Astro config.trailingSlash is set', async () => {
+    const { default: geo } = await loadAstroEntry();
+    writeFixtureFile('dist/index.html', '<!doctype html><html><head><title>Home</title></head><body></body></html>');
+    const { logger } = createLogger();
+    let capturedOptions;
+    const integration = geo(
+      { domain: 'https://site.example', llmsMdMirror: false, generateFeed: false },
+      {
+        runGenerate(generationOptions) {
+          capturedOptions = generationOptions;
+        },
+      },
+    );
+
+    await integration.hooks['astro:config:done']({
+      config: {
+        root: pathToFileURL(`${fixtureRoot}/`),
+        site: new URL('https://site.example'),
+        base: '/',
+      },
+      buildOutput: 'static',
+      logger,
+    });
+    await integration.hooks['astro:build:done']({
+      dir: pathToFileURL(`${join(fixtureRoot, 'dist')}/`),
+      pages: [],
+      assets: new Map(),
+      logger,
+    });
+
+    expect('trailingSlash' in capturedOptions).toBe(false);
+  });
+
+  it.each([
+    ['never', "'always'", 'always'],
+    ['preserve', "'always'", 'always'],
+    ['always', "'ignore'", 'ignore'],
+    ['always', 'omitted', undefined],
+  ])("preserves explicit options.trailingSlash '%s' when Astro config.trailingSlash is %s", async (explicitTrailingSlash, _label, astroTrailingSlash) => {
+    const { default: geo } = await loadAstroEntry();
+    writeFixtureFile('dist/index.html', '<!doctype html><html><head><title>Home</title></head><body></body></html>');
+    const { logger } = createLogger();
+    let capturedOptions;
+    const integration = geo(
+      {
+        domain: 'https://site.example',
+        trailingSlash: explicitTrailingSlash,
+        llmsMdMirror: false,
+        generateFeed: false,
+      },
+      {
+        runGenerate(generationOptions) {
+          capturedOptions = generationOptions;
+        },
+      },
+    );
+
+    await integration.hooks['astro:config:done']({
+      config: {
+        root: pathToFileURL(`${fixtureRoot}/`),
+        site: new URL('https://site.example'),
+        base: '/',
+        ...(astroTrailingSlash !== undefined ? { trailingSlash: astroTrailingSlash } : {}),
+      },
+      buildOutput: 'static',
+      logger,
+    });
+    await integration.hooks['astro:build:done']({
+      dir: pathToFileURL(`${join(fixtureRoot, 'dist')}/`),
+      pages: [],
+      assets: new Map(),
+      logger,
+    });
+
+    expect(capturedOptions?.trailingSlash).toBe(explicitTrailingSlash);
+  });
 });
