@@ -4,6 +4,26 @@ All notable changes to `vite-plugin-geo` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0]
+
+### Added
+
+- **Trailing-slash normalization (`trailingSlash` / `--trailing-slash`)**: Supports `'never' | 'always' | 'preserve'` (default `'never'`) for root and extensionless public URLs across Vite, Astro, and CLI while never appending trailing slashes to files with extensions (`.md`, `.html`, `.xml`, `.txt`). `vite-plugin-geo/astro` automatically aligns with Astro's `config.trailingSlash` (`'always' -> 'always'`, `'never' -> 'never'`, `'ignore' -> 'preserve'`).
+- **Markdown mirror extraction filters (`data-geo-ignore` & `markdownStripSelectors` / `--markdown-strip-selectors`)**: Allows opting HTML elements out of Markdown mirror conversion via the `data-geo-ignore` attribute or custom CSS selector lists.
+- **Markdown mirror route scoping (`llmsMdMirrorInclude`, `llmsMdMirrorExclude`, `--llms-md-mirror-include`, `--llms-md-mirror-exclude`)**: Limits which pages emit `.md` mirrors and `rel="alternate" type="text/markdown"` links.
+- **RSS feed scoping and localization (`feedIncludePatterns`, `feedExcludePatterns`, `feedMaxItems`, `feedLanguage`, `feedByLocale` and matching CLI flags)**: Filters included pages, caps emitted `<item>` count, overrides feed `<language>`, and supports generating separate locale-scoped RSS feeds for multilingual sites.
+- **Deployment and recipe documentation**: Documented Astro import guards, static host `Content-Type` header rules (`_headers` for Cloudflare Pages / Netlify and `vercel.json` for Vercel), mature-site mirror-only setups, and multilingual Astro configurations in `README.md` and `README.zh-CN.md`.
+
+### Changed
+
+- **HTML-to-Markdown mirror extraction quality**: Converts HTML `<table>` elements (with or without `<thead>`) into GFM pipe tables, normalizes block-level `<a>` cards to prevent broken multi-line link syntax, adds clean word spacing between adjacent inline tags without altering punctuation, formats `<details>`/`<summary>` cleanly, strips `[hidden]`, `[aria-hidden="true"]`, `[data-geo-ignore]`, `<form>` controls, `<button>`, and `<nav>`/breadcrumb noise inside `<main>`/`<article>`, and enforces at most one top-level `# ` H1 per `.md` mirror outside fenced code blocks.
+- **Handwritten `llms.txt` preservation warning**: Emits a build warning when a user-owned `llms.txt` is preserved alongside generated `.md` mirrors so maintainers know to keep manual links synchronized.
+
+### Fixed
+
+- **Astro `integrations` default-export guard**: Passing the default `'vite-plugin-geo'` Vite export into Astro `integrations` now fails fast during `astro:config:setup` with an explicit error pointing to `'vite-plugin-geo/astro'`.
+- **`llms.txt` fallback for excluded Markdown mirrors**: Pages without a generated or declared `.md` mirror now fall back to their HTML `pageUrl` in `llms.txt` instead of emitting a dead `.md` URL.
+
 ## [0.3.0]
 
 ### Added

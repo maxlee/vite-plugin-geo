@@ -33,10 +33,10 @@ Post-build discovery file generator and static verifier for Vite, [Vite+](https:
 
 ## Features
 
-- **Sitemap 0.9 generation and splitting.** Builds URL sets from emitted HTML, splits files automatically above 50,000 URLs or `sitemapMaxBytes` (up to 50 MiB), and coexists with `@astrojs/sitemap`.
+- **Sitemap 0.9 generation and splitting.** Builds URL sets from emitted HTML with configurable `trailingSlash` normalization, splits files automatically above 50,000 URLs or `sitemapMaxBytes` (up to 50 MiB), and coexists with `@astrojs/sitemap`.
 - **RFC 9309 `robots.txt` handling.** Preserves hand-written `robots.txt` byte-for-byte by default, validates custom directives against control characters and the 500 KiB limit, and writes only to the site root.
-- **RSS 2.0 feed discovery.** Emits `feed.xml` with an Atom `self` link and canonical URL `<guid>` values, and injects `<link rel="alternate" type="application/rss+xml">` into HTML pages idempotently.
-- **`llms.txt` v2 and Markdown mirrors.** Injects `rel="describedby"` and `rel="alternate" type="text/markdown"` links, preserves existing user alternates, and extracts clean `<main>` or single-`<article>` prose into `.md` mirrors without site navigation noise.
+- **RSS 2.0 feed discovery.** Emits `feed.xml` (or locale-scoped feeds with `feedByLocale`) with an Atom `self` link, include/exclude filters, item caps, language override, and idempotent `<link rel="alternate" type="application/rss+xml">` injection.
+- **`llms.txt` v2 and Markdown mirrors.** Injects `rel="describedby"` and `rel="alternate" type="text/markdown"` links, scopes mirrors with `llmsMdMirrorInclude` / `llmsMdMirrorExclude`, and extracts clean `<main>` or single-`<article>` prose (with GFM tables, `<details>/<summary>`, `data-geo-ignore`, `markdownStripSelectors`, and single-H1 enforcement) into `.md` mirrors without navigation or form noise.
 - **Multilingual `hreflang` support.** Populates Sitemap `xhtml:link` alternates from global route templates or per-page HTML `<link rel="alternate" hreflang="...">` tags (`hreflangFromHtml`).
 - **Optional `humans.txt` and `sku.md` (`1.0.0-beta`).** Emits verified team metadata and root-level pure Markdown merchant catalogs without fabricating missing fields.
 - **Static build diagnostics and read-only `verify`.** Prints deterministic page and link diagnostics during builds (`audit`), and verifies final `dist/` outputs after all plugins finish (`vite-plugin-geo verify`) with JSON (`schemaVersion: "1.0"`) and SARIF 2.1.0 reports.
@@ -138,6 +138,8 @@ Vite+ notes:
 
 Astro emits final HTML after its internal Vite build completes. Do not register `vite-plugin-geo` inside `vite.plugins` in Astro projects. Choose one of the two supported workflows below (do not combine both).
 
+> **Important:** Astro `integrations` **must** import from `'vite-plugin-geo/astro'` (`import geo from 'vite-plugin-geo/astro'`). Passing the default `'vite-plugin-geo'` Vite plugin export into `integrations` throws an explicit configuration error during `astro:config:setup`.
+
 #### Option 1: Native Astro integration (recommended)
 
 ```js
@@ -156,7 +158,7 @@ Domain resolution order in Astro is `geo({ domain })`, then Astro `site`, then `
 Astro integration notes:
 
 - When `prettyUrls` is not explicitly configured and Astro `build.format` is `'file'`, `vite-plugin-geo/astro` disables `prettyUrls` so public links match `.html` outputs.
-- Respect your Astro `trailingSlash` setting when setting explicit `canonical` tags or `sitemapUrl` so discovery URLs match emitted pages.
+- When `trailingSlash` is not explicitly configured, `vite-plugin-geo/astro` automatically aligns with Astro's `config.trailingSlash` (`'always' -> 'always'`, `'never' -> 'never'`, `'ignore' -> 'preserve'`). Markdown mirrors always keep `/about.md` (never `/about/.md`).
 - Redirect entries reported by Astro (`route.type === 'redirect'`) are excluded from `sitemap.xml`, `llms.txt`, `feed.xml`, Markdown mirrors, and static audits.
 
 #### Option 2: Post-build CLI
@@ -188,16 +190,22 @@ dist/
 
 | File | Default | Behavior |
 |---|---|---|
-| `sitemap.xml` | Enabled (auto) | Lists public page URLs; splits and writes `sitemap_index.xml` above 50,000 URLs or `sitemapMaxBytes`. Skips automatically when an external Sitemap is detected. |
+| `sitemap.xml` | Enabled (auto) | Lists public page URLs respecting `trailingSlash`; splits and writes `sitemap_index.xml` above 50,000 URLs or `sitemapMaxBytes`. Skips automatically when an external Sitemap is detected. |
 | `sitemap_index.xml` | Conditional | Emitted automatically when Sitemap sharding triggers and `sitemapIndex: true`. |
 | `robots.txt` | Auto | Preserves any hand-written `robots.txt`; otherwise generates at the root scope (`/`) and skips non-root `routeBasePath` scopes. Always targets `/robots.txt`. |
-| `feed.xml` | Enabled | Emits RSS 2.0 with Atom `self` link and injects HTML discovery `<link>` tags. |
-| `llms.txt` | Enabled | Emits the single-scope `llms.txt` v2 index for the configured `routeBasePath`. |
-| `*.md` | Enabled | Per-page Markdown mirrors derived from public `pagePath`, containing `# <title>`, `> <description>`, and extracted `<main>` or `<article>` content. |
+| `feed.xml` | Enabled | Emits RSS 2.0 with Atom `self` link and injects HTML discovery `<link>` tags. Can be filtered, capped, language-overridden, or split per locale (`feedByLocale`). |
+| `llms.txt` | Enabled | Emits the single-scope `llms.txt` v2 index for the configured `routeBasePath`. Links to `.md` mirrors when generated, or falls back to HTML `pageUrl` when a mirror is excluded. |
+| `*.md` | Enabled | Per-page Markdown mirrors derived from public `pagePath`, containing `# <title>`, `> <description>`, and cleaned `<main>` or `<article>` content. Always uses `/about.md` (never `/about/.md`). |
 | `humans.txt` | Disabled | Emits verified author, license, and runtime details derived from explicit config and `package.json`. |
 | `sku.md` | Disabled | Emits a root-level SKU.md `1.0.0-beta` catalog manifest when `skuMd` is configured. |
 
-**Ownership and conflict handling:** Files written by this plugin carry a format-specific `Generated by vite-plugin-geo` marker and are regenerated on subsequent builds. Removing the marker marks a file as user-owned. When a user-owned `llms.txt`, `feed.xml`, `humans.txt`, `sku.md`, or `*.md` mirror already exists, `fileConflict` defaults to `'preserve'` (warns and keeps the user file while generating remaining outputs). Set `fileConflict: 'error'` to fail before writing, or `'overwrite'` to replace user files. `sitemap.xml` and `robots.txt` use `sitemapConflict` and `generateRobots`.
+**Directory format & mirror naming:** Under `build.format: 'directory'` (or `*/index.html` directories) with `prettyUrls: true`, directory index pages map directly to `llms.txt` public-path mirror names: `about/index.html -> about.md` and `zh/index.html -> zh.md` (while `index.html -> index.md`). Even when `trailingSlash: 'always'` is active on HTML page URLs (`/about/`, `/zh/`), `.md` mirrors keep `/about.md` and `/zh.md` without a trailing slash.
+
+**Markdown mirror extraction:** Content extraction prefers `<main>`, then a single `<article>`, falling back to `<body>` without site chrome. It strips `[hidden]`, `[aria-hidden="true"]`, `[data-geo-ignore]`, `<form>`, `<input>`, `<select>`, `<textarea>`, `<button>`, `<nav>`, `[role="navigation"]`, breadcrumb navigation, and any custom `markdownStripSelectors`. It also emits GFM pipe tables (with or without `<thead>`), normalizes multi-element `<a>` cards into clean `[Title](href)` links with body text and proper adjacent inline spacing, formats `<details>`/`<summary>` blocks cleanly, and enforces a single top-level `# ` H1 (deduplicating a matching leading `<h1>` and downgrading remaining body `#` headings outside fenced code blocks to `##`).
+
+**RSS feed behavior note:** With the default `lastmodStrategy: 'none'`, RSS `<item>` entries omit `<pubDate>` and are sorted deterministically by URL. For non-blog or utility/tool sites, either set `generateFeed: false` or restrict feed items to article/changelog paths with `feedIncludePatterns` (and enable `lastmodStrategy: 'git'` or `'file-mtime'` when chronological `<pubDate>` ordering is needed).
+
+**Ownership and conflict handling:** Files written by this plugin carry a format-specific `Generated by vite-plugin-geo` marker and are regenerated on subsequent builds. Removing the marker marks a file as user-owned. When a user-owned `llms.txt`, `feed.xml`, `humans.txt`, `sku.md`, or `*.md` mirror already exists, `fileConflict` defaults to `'preserve'` (warns and keeps the user file while generating remaining outputs; preserving a hand-written `llms.txt` alongside generated `.md` mirrors emits a build warning so you know to keep manual `llms.txt` links in sync). Set `fileConflict: 'error'` to fail before writing, or `'overwrite'` to replace user files. `sitemap.xml` and `robots.txt` use `sitemapConflict` and `generateRobots`.
 
 ## Configuration
 
@@ -207,6 +215,7 @@ dist/
 | `distDir` | `string` | Vite `build.outDir` | Build output directory (not applicable to `vite-plugin-geo/astro`). |
 | `routeBasePath` | `string` | Vite or Astro `base` | Single public path scope (for example, `'/docs/'`). Rejects full URLs. |
 | `prettyUrls` | `boolean` | `true` | Strip `.html` extensions from public page URLs. |
+| `trailingSlash` | `'never' \| 'always' \| 'preserve'` | `'never'` (Astro: syncs `config.trailingSlash`) | Trailing-slash policy for root and extensionless public URLs; files with extensions (`.md`, `.html`, `.xml`, `.txt`) never receive a trailing slash. `'preserve'` honors each page's `<link rel="canonical">` trailing slash when declared. |
 | `lastmodStrategy` | `'none' \| 'file-mtime' \| 'build' \| 'git'` | `'none'` | Timestamp source for Sitemap `<lastmod>` and RSS `<pubDate>`. |
 | `excludePatterns` | `string[]` | `['404.html', '500.html']` | Glob patterns excluded from discovery outputs and link injection. |
 | `hreflang` | `Record<string, string>` | `undefined` | Global language alternate URL templates using `{path}`. |
@@ -218,11 +227,19 @@ dist/
 | `routeConflict` | `'error' \| 'first' \| 'last'` | `'error'` | Fail or deterministically pick one file when multiple HTML files map to the same public route. |
 | `llmsMdMirror` | `boolean` | `true` | Generate Markdown mirrors for pages lacking a valid Markdown alternate. |
 | `llmsMdMirrorStyle` | `'append' \| 'replace'` | `'append'` | Mirror filename derivation. Under `prettyUrls: false`, `append` produces `about.html.md` and `replace` produces `about.md`. |
+| `llmsMdMirrorInclude` | `string[]` | `undefined` | Glob patterns selecting which pages emit `.md` mirrors and Markdown `alternate` links. Unmatched pages fall back to HTML URLs in `llms.txt`. |
+| `llmsMdMirrorExclude` | `string[]` | `undefined` | Glob patterns excluding pages from `.md` mirror generation (excluded pages fall back to HTML URLs in `llms.txt`). |
+| `markdownStripSelectors` | `string[]` | `[]` | CSS selectors stripped from extracted HTML before Markdown mirror conversion (in addition to `data-geo-ignore`, forms, buttons, hidden elements, and nav). |
 | `llmsClassify` | `(page: LlmsPageInfo) => string \| null \| undefined` | Auto | Custom section classifier for `llms.txt`. |
 | `llmsSections` | `Record<string, string \| string[]>` | Auto | Path-prefix to section mapping for `llms.txt`. |
 | `generateRobots` | `boolean` | Auto | Preserves hand-written `robots.txt`; otherwise generates on `/` scope only. Explicit `true` throws if a hand-written file exists. |
 | `robotsDirectives` | `string[]` | `[]` | Custom `robots.txt` directives validated against RFC 9309 constraints. |
 | `generateFeed` | `boolean` | `true` | Enable RSS 2.0 `feed.xml` generation and HTML discovery link injection. |
+| `feedIncludePatterns` | `string[]` | `undefined` | Glob patterns limiting which pages are included in RSS feeds. |
+| `feedExcludePatterns` | `string[]` | `undefined` | Glob patterns excluding pages from RSS feeds. |
+| `feedMaxItems` | `number` | `undefined` | Maximum number of `<item>` entries emitted per RSS feed (positive integer). |
+| `feedLanguage` | `string` | Home `<html lang>` or `'en'` | Explicit BCP 47 `<language>` tag for `feed.xml` (and fallback when `feedByLocale: true`). |
+| `feedByLocale` | `boolean` | `false` | Generate separate locale-scoped RSS feeds grouped by page locale instead of a single mixed-language `feed.xml`. |
 | `generateHumans` | `boolean` | `false` | Enable `humans.txt` generation. |
 | `skuMd` | `SkuMdOptions` | `undefined` | Root `/sku.md` (`1.0.0-beta`) merchant manifest configuration. |
 | `audit` | `boolean` | `true` | Run static HTML and discovery diagnostics during the build. |
@@ -346,9 +363,13 @@ GitHub Actions SARIF workflow example:
 | `--package-json-path <path>` | Path to `package.json`, or `--package-json-path=false`. |
 | `--strip-path-prefixes <list>` | Comma-separated source path prefixes to strip. |
 | `--exclude-patterns <list>` | Comma-separated exclusion globs. |
+| `--trailing-slash <mode>` | `never`, `always`, or `preserve` (default: `never`). |
 | `--lastmod-strategy <value>` | `none`, `file-mtime`, `build`, or `git`. |
 | `--lastmod-ignore <list>` | Comma-separated globs skipped by `lastmod`. |
 | `--llms-md-mirror-style <value>` | `append` or `replace`. |
+| `--llms-md-mirror-include <list>` | Comma-separated globs selecting pages for `.md` mirror generation. |
+| `--llms-md-mirror-exclude <list>` | Comma-separated globs excluding pages from `.md` mirror generation. |
+| `--markdown-strip-selectors <list>` | Comma-separated CSS selectors stripped before Markdown mirror conversion. |
 | `--robots-directives <list>` | Comma-separated custom `robots.txt` directives. |
 | `--sitemap-url <path-or-url>` | Sitemap URL or path referenced by `robots.txt` and `llms.txt`. |
 | `--sitemap-conflict <mode>` | `preserve`, `error`, or `overwrite`. |
@@ -366,6 +387,11 @@ GitHub Actions SARIF workflow example:
 | `--generate-robots / --no-generate-robots` | Toggle `robots.txt` generation. |
 | `--llms-md-mirror / --no-llms-md-mirror` | Toggle Markdown mirror generation. |
 | `--generate-feed / --no-generate-feed` | Toggle RSS 2.0 `feed.xml` generation. |
+| `--feed-include-patterns <list>` | Comma-separated globs limiting pages included in RSS feeds. |
+| `--feed-exclude-patterns <list>` | Comma-separated globs excluding pages from RSS feeds. |
+| `--feed-max-items <number>` | Maximum number of items emitted per RSS feed. |
+| `--feed-language <tag>` | Explicit BCP 47 `<language>` tag for generated RSS feeds. |
+| `--feed-by-locale / --no-feed-by-locale` | Toggle per-locale RSS feed generation. |
 | `--generate-humans / --no-generate-humans` | Toggle `humans.txt` generation. |
 | `--audit / --no-audit` | Toggle build diagnostics (also accepts `--audit=true\|false`). |
 | `--debug / --no-debug` | Toggle verbose planning summary. |
@@ -444,6 +470,100 @@ geo({
 })
 ```
 
+### Mature site adding content-page Markdown mirrors only
+
+If your site already maintains its own `sitemap.xml`, `robots.txt`, or `llms.txt` (or does not need an RSS feed), keep all existing SEO files intact and emit `.md` mirrors strictly for content sections:
+
+```js
+geo({
+  domain: 'https://example.com',
+  generateFeed: false,
+  sitemapConflict: 'preserve',
+  fileConflict: 'preserve',
+  llmsMdMirrorInclude: ['docs/**', 'guides/**', 'blog/**'],
+  markdownStripSelectors: ['.toc', '.breadcrumb', '[data-promo]'],
+})
+```
+
+You can also mark individual HTML blocks with `data-geo-ignore` so widgets or callouts inside `<main>` are excluded from generated `.md` mirrors:
+
+```html
+<aside data-geo-ignore>Interactive widget omitted from .md mirrors</aside>
+```
+
+Note: When `fileConflict: 'preserve'` keeps a hand-written `llms.txt` alongside newly generated `.md` mirrors, the build emits a reminder warning because your hand-written `llms.txt` is not edited automatically.
+
+### Multilingual Astro site
+
+Use `vite-plugin-geo/astro` (never the default `'vite-plugin-geo'` Vite export) in `astro.config.mjs`:
+
+```js
+// astro.config.mjs
+import { defineConfig } from 'astro/config';
+import geo from 'vite-plugin-geo/astro';
+
+export default defineConfig({
+  site: 'https://example.com',
+  trailingSlash: 'always',
+  integrations: [
+    geo({
+      hreflangFromHtml: true,
+      feedIncludePatterns: ['blog/**', 'zh/blog/**'],
+      feedByLocale: true,
+      feedLanguage: 'en',
+      excludePatterns: ['**/404.html', '500.html'],
+    }),
+  ],
+});
+```
+
+Multilingual Astro notes:
+
+- **`trailingSlash` alignment:** `vite-plugin-geo/astro` automatically follows Astro's `config.trailingSlash` (`'always' -> 'always'`, `'never' -> 'never'`, `'ignore' -> 'preserve'`), while keeping `.md` mirrors at `/about.md` and `/zh/about.md` (never `/about/.md`).
+- **Using `@astrojs/sitemap`:** If you keep `@astrojs/sitemap` alongside `geo()`, place `sitemap()` first (`integrations: [sitemap(), geo()]`). By default `vite-plugin-geo` preserves `@astrojs/sitemap`'s output; omit `sitemap()` (or set `generateSitemap: true, sitemapConflict: 'overwrite'`) when you want `vite-plugin-geo` to generate `sitemap.xml` with `hreflangFromHtml: true`.
+- **Localized feeds:** `feedIncludePatterns` prevents landing pages from entering RSS feeds, `feedByLocale: true` emits per-locale feeds instead of mixing languages under one `<language>`, and `feedLanguage` supplies the fallback language tag.
+- **Multilingual `404.html`:** Root `404.html` and `500.html` are excluded by default. If your site emits localized error pages (such as `zh/404.html` or `en/404.html`), add `'**/404.html'` to `excludePatterns` (and `noindex`) so error pages do not appear in discovery outputs, while retaining root `dist/404.html` for static hosts.
+- **Post-build script order:** Run `astro build` (which executes `vite-plugin-geo/astro` during `astro:build:done`) -> any custom post-build HTML/asset scripts (if you invoke `vite-plugin-geo generate` via CLI instead of the integration, run it *after* HTML-modifying scripts) -> `vite-plugin-geo verify` **last** so verification inspects the final `dist/` output.
+
+### Static host `Content-Type` headers (`_headers` and `vercel.json`)
+
+Many static hosts serve `.md` files as `text/plain` (or `application/octet-stream`) without `charset=utf-8`, and may serve `feed.xml` without `application/rss+xml; charset=utf-8`. Under `X-Content-Type-Options: nosniff` or on sites with non-ASCII text, browsers, feed readers, and AI agents can misrender or reject responses unless explicit `Content-Type` headers are configured.
+
+**Cloudflare Pages / Netlify (`public/_headers`):**
+
+```text
+/*.md
+  Content-Type: text/markdown; charset=utf-8
+
+/feed.xml
+  Content-Type: application/rss+xml; charset=utf-8
+```
+
+On Cloudflare Pages, `*` matches across `/`, so `/*.md` covers nested files such as `/zh/about.md`. On Netlify or when using `feedByLocale: true`, add directory-scoped rules (such as `/docs/*.md`, `/zh/*.md`, and `/zh/feed.xml`) if your host matches `*` within a single path segment.
+
+**Vercel (`vercel.json`):**
+
+```json
+{
+  "headers": [
+    {
+      "source": "/(.*)\\.md$",
+      "headers": [
+        { "key": "Content-Type", "value": "text/markdown; charset=utf-8" }
+      ]
+    },
+    {
+      "source": "/feed.xml",
+      "headers": [
+        { "key": "Content-Type", "value": "application/rss+xml; charset=utf-8" }
+      ]
+    }
+  ]
+}
+```
+
+If `feedByLocale: true` emits localized feeds such as `/zh/feed.xml`, also add a `"source": "/:locale/feed.xml"` rule with `Content-Type: application/rss+xml; charset=utf-8`.
+
 ### Deployment checklist
 
 - **Prevent host soft-404 responses:** Static hosts such as Cloudflare Pages return `200 OK` with the home page for unknown paths unless `404.html` exists at the output root. Ensure your build emits `404.html` and run `vite-plugin-geo verify` in CI.
@@ -464,12 +584,13 @@ Specification review snapshot: `2026-08-12`.
 
 ### URL resolution rules
 
-| Mode | HTML input | Public URL path |
-|---|---|---|
-| `prettyUrls: true` | `about.html` | `/about` |
-| `prettyUrls: true` | `docs/index.html` | `/docs` |
-| `prettyUrls: false` | `about.html` | `/about.html` |
-| Home page | `index.html` | `/` (always) |
+| Mode | HTML input | Public URL path | Markdown mirror |
+|---|---|---|---|
+| `prettyUrls: true`, `trailingSlash: 'never'` (default) | `about.html` or `about/index.html` | `/about` | `/about.md` |
+| `prettyUrls: true`, `trailingSlash: 'always'` | `about.html` or `about/index.html` | `/about/` | `/about.md` |
+| `prettyUrls: true`, `trailingSlash: 'preserve'` | `docs/index.html` | Matches page `<link rel="canonical">` trailing slash | `/docs.md` |
+| `prettyUrls: false` | `about.html` | `/about.html` | `/about.html.md` (`append`) / `/about.md` (`replace`) |
+| Home page | `index.html` | `/` (always; `routeBasePath` root `/docs/` under `'always'`) | `/index.md` |
 
 ### Reviewed and intentionally not generated
 
