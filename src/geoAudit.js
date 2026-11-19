@@ -50,6 +50,14 @@ function publicUrl(siteUrl, path, routeBasePath = '') {
 function pageUrlAliases(page, siteUrl, routeBasePath = '') {
   const fileUrl = page.filePageUrl || publicUrl(siteUrl, page.relativePath, routeBasePath).href;
   const aliases = [page.pageUrl, fileUrl];
+  const parsedPageUrl = httpUrl(page.pageUrl);
+  if (parsedPageUrl && !/\.html?$/i.test(parsedPageUrl.pathname)) {
+    const cleanPathname = stripTrailingSlash(parsedPageUrl.pathname);
+    aliases.push(`${parsedPageUrl.origin}${cleanPathname}`);
+    if (cleanPathname !== '/') {
+      aliases.push(`${parsedPageUrl.origin}${cleanPathname}/`);
+    }
+  }
   if (/(^|\/)index\.html?$/i.test(page.relativePath)) {
     const directory = /index\.html?$/i.test(fileUrl)
       ? fileUrl.replace(/index\.html?$/i, '')
@@ -62,6 +70,17 @@ function canonicalMatchesPage(canonicalUrl, page, options = {}) {
   const expected = httpUrl(page.pageUrl);
   if (!expected) return false;
   if (canonicalUrl.origin !== expected.origin || canonicalUrl.search !== expected.search) {
+    return false;
+  }
+  const strictTrailingSlash = options.trailingSlash === 'always' || options.trailingSlash === 'never';
+  if (strictTrailingSlash) {
+    if (canonicalUrl.pathname === expected.pathname) {
+      return true;
+    }
+    if (options.prettyUrls === false && /(^|\/)index\.html?$/i.test(expected.pathname)) {
+      const directoryPathname = expected.pathname.replace(/index\.html?$/i, '') || '/';
+      return canonicalUrl.pathname === directoryPathname;
+    }
     return false;
   }
   const normalizedCanonical = stripTrailingSlash(canonicalUrl.pathname);
@@ -96,7 +115,12 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
   for (const page of allPages) {
     for (const alias of pageUrlAliases(page, siteUrl, options.routeBasePath || '')) {
       const url = httpUrl(alias);
-      if (url) targets.set(key(url), page);
+      if (!url) continue;
+      const targetKey = key(url);
+      const existing = targets.get(targetKey);
+      if (!existing || (existing.noindex && !page.noindex)) {
+        targets.set(targetKey, page);
+      }
     }
   }
   const plannedFiles = new Set([...files, ...existingFiles].map(({ filename }) => key(publicUrl(siteUrl, filename, options.routeBasePath || ''))));
@@ -207,7 +231,13 @@ export function auditGeoPlan({ allPages = [], pages = [], homePage, files = [], 
       if (!candidates.some((link) => httpUrl(link.href, finalBase)?.href === expected)) add(page, rule, 'warning', candidates.length ? `发现入口未指向预期地址 ${expected}：${candidates.map((link) => link.href).join('、')}` : `缺少发现入口：${expected}`, '确认最终 HTML 中的入口及 base 地址。');
     };
     discovery('discovery-llms', publicUrl(siteUrl, 'llms.txt', options.routeBasePath || '').href, (link) => tokens(link.rel).includes('describedby') && link.type.toLowerCase() === 'text/markdown');
-    if (options.generateFeed !== false) discovery('discovery-feed', publicUrl(siteUrl, 'feed.xml', options.routeBasePath || '').href, (link) => tokens(link.rel).includes('alternate') && /application\/(rss|atom)\+xml/i.test(link.type));
+    if (options.generateFeed !== false && page.feedUrl !== null) {
+      discovery(
+        'discovery-feed',
+        page.feedUrl || publicUrl(siteUrl, 'feed.xml', options.routeBasePath || '').href,
+        (link) => tokens(link.rel).includes('alternate') && /application\/(rss|atom)\+xml/i.test(link.type),
+      );
+    }
     if (options.llmsMdMirror !== false && page.markdownUrl && !page.hasExistingMarkdownAlternate) discovery('discovery-markdown', page.markdownUrl, (link) => tokens(link.rel).includes('alternate') && link.type.toLowerCase() === 'text/markdown');
     if (page.hasExistingMarkdownAlternate) for (const link of links.filter((link) => tokens(link.rel).includes('alternate') && link.type.toLowerCase() === 'text/markdown')) {
       const url = httpUrl(link.href, finalBase);

@@ -33,6 +33,7 @@ import {
   isValidLanguageTag,
   isWithinDir,
   matchGlob,
+  matchesPagePatterns,
   normalizeFilePath,
   normalizeRouteBasePath,
   resolveMarkdownAlternateUrl,
@@ -42,6 +43,8 @@ import {
   resolvePagePath,
   resolvePagePathConflicts,
   sanitizeControlChars,
+  shouldGenerateMarkdownMirror,
+  validateMarkdownStripSelectors,
 } from './geoGenerator.js';
 import {
   extractTeamInfoFromPackageJson,
@@ -108,7 +111,8 @@ function markGeneratedFile(filename, content) {
   if (isManagedGeneratedFile(filename, content)) {
     return content;
   }
-  if (filename === 'feed.xml') {
+  const normalized = normalizeFilePath(filename);
+  if (normalized === 'feed.xml' || normalized.endsWith('/feed.xml')) {
     const marked = content.replace(
       /^<\?xml version="1\.0" encoding="UTF-8"\?>/,
       (xmlDecl) => `${xmlDecl}\n${MARKER_COMMENT}`,
@@ -163,6 +167,7 @@ export function formatGeoDebugSummary({
   distDir,
   sourceHtmlDir,
   report = {},
+  options = {},
 } = {}) {
   const lines = ['🔍 [GEO debug] Generation summary'];
   lines.push(`   siteUrl=${report.siteUrl || ''} routeBasePath=${report.routeBasePath ?? ''}`);
@@ -194,6 +199,16 @@ export function formatGeoDebugSummary({
       + fileCompatibility.decisions
         .map(({ filename, decision }) => `${filename} → ${decision}`)
         .join('、'),
+    );
+  }
+  const generateFeed = options.generateFeed !== undefined
+    ? options.generateFeed !== false
+    : report.generateFeed !== false;
+  const lastmodStrategy = report.lastmodStrategy || options.lastmodStrategy || 'none';
+  if (generateFeed && lastmodStrategy === 'none') {
+    lines.push(
+      '   feed note: lastmodStrategy is "none", so RSS <item> entries omit <pubDate> and sort by URL; '
+      + 'for non-blog sites consider generateFeed: false or feedIncludePatterns.',
     );
   }
   const files = report.generatedFiles || [];
@@ -258,20 +273,6 @@ function resolveSiteUrl(options, packageJson) {
   throw new Error(MISSING_DOMAIN_MESSAGE);
 }
 
-function dedupePageInputs(inputs, options) {
-  if (!Array.isArray(inputs)) {
-    throw new Error('htmlInputs must be an array.');
-  }
-  const groups = new Map();
-  inputs.forEach((input) => {
-    const relativePath = assertSafeRelativePath(input?.relativePath, 'htmlInputs[].relativePath');
-    const pagePath = resolvePagePath(relativePath, options);
-    if (!groups.has(pagePath)) groups.set(pagePath, []);
-    groups.get(pagePath).push({ ...input, relativePath, pagePath });
-  });
-  return resolvePagePathConflicts(groups, options);
-}
-
 function getStaticExcludeReason(relativePath, options) {
   const customPatterns = Array.isArray(options.excludePatterns) ? options.excludePatterns : [];
   const fileName = basename(relativePath);
@@ -284,6 +285,83 @@ function getStaticExcludeReason(relativePath, options) {
     return 'exclude pattern';
   }
   return '';
+}
+
+/**
+ * Resolve the effective `'never' | 'always'` trailing-slash policy for one page.
+ * Under `'preserve'`, inspects a same-origin canonical URL and defaults to `'never'`.
+ */
+export function resolvePageTrailingSlashMode(canonicalHref, documentBaseUrl, siteUrl, trailingSlashOption) {
+  if (trailingSlashOption === 'always') {
+    return 'always';
+  }
+  if (trailingSlashOption !== 'preserve') {
+    return 'never';
+  }
+  const rawCanonical = String(canonicalHref || '').trim();
+  if (!rawCanonical) {
+    return 'never';
+  }
+  let siteOrigin;
+  try {
+    siteOrigin = new URL(siteUrl).origin;
+  } catch {
+    return 'never';
+  }
+  let parsed;
+  try {
+    parsed = new URL(rawCanonical, documentBaseUrl || siteUrl);
+  } catch {
+    return 'never';
+  }
+  if (!/^https?:$/i.test(parsed.protocol) || parsed.username || parsed.password || parsed.origin !== siteOrigin) {
+    return 'never';
+  }
+  if (parsed.pathname !== '/') {
+    return parsed.pathname.endsWith('/') ? 'always' : 'never';
+  }
+  const pathWithoutQueryOrHash = rawCanonical.split(/[?#]/, 1)[0];
+  return pathWithoutQueryOrHash.endsWith('/') ? 'always' : 'never';
+}
+
+export function matchesFeedLanguage(pageLang, targetLanguage) {
+  const target = String(targetLanguage || '').trim().toLowerCase();
+  if (!target) return true;
+  const normalizedPageLang = String(pageLang || '').trim().toLowerCase();
+  if (!normalizedPageLang) return false;
+  if (normalizedPageLang === target) return true;
+  if (!target.includes('-') && normalizedPageLang.startsWith(`${target}-`)) {
+    return true;
+  }
+  return false;
+}
+
+export function filterFeedPages(pages, options = {}) {
+  return pages.filter((page) => {
+    if (Array.isArray(options.feedIncludePatterns) && !matchesPagePatterns(options.feedIncludePatterns, page)) {
+      return false;
+    }
+    if (Array.isArray(options.feedExcludePatterns) && matchesPagePatterns(options.feedExcludePatterns, page)) {
+      return false;
+    }
+    if (options.feedByLocale !== true && options.feedLanguage) {
+      if (!matchesFeedLanguage(page.lang, options.feedLanguage)) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+export function resolvePrimaryFeedLocale(options = {}, homeLang = '') {
+  const candidate = String(options.feedLanguage || homeLang || 'en').trim();
+  return isValidLanguageTag(candidate) ? candidate : 'en';
+}
+
+export function resolvePageLocaleKey(pageLang, primaryLocale) {
+  const trimmed = typeof pageLang === 'string' ? pageLang.trim() : '';
+  const tag = trimmed && isValidLanguageTag(trimmed) ? trimmed : primaryLocale;
+  return tag.toLowerCase();
 }
 
 function filterPageModels(pageModels, options) {
@@ -487,6 +565,7 @@ export function validateGeoOptions(options = {}) {
     'llmsMdMirror',
     'generateHumans',
     'generateFeed',
+    'feedByLocale',
     'generateRobots',
     'generateSitemap',
     'debug',
@@ -554,9 +633,33 @@ export function validateGeoOptions(options = {}) {
       errors.push("Option 'sitemapMaxBytes' must not exceed 52,428,800 bytes (50 MiB protocol limit).");
     }
   }
-  ['stripPathPrefixes', 'excludePatterns', 'robotsDirectives', 'lastmodIgnore'].forEach(
-    (key) => validateStringArray(options, key, errors),
-  );
+  [
+    'stripPathPrefixes',
+    'excludePatterns',
+    'robotsDirectives',
+    'lastmodIgnore',
+    'markdownStripSelectors',
+    'llmsMdMirrorInclude',
+    'llmsMdMirrorExclude',
+    'feedIncludePatterns',
+    'feedExcludePatterns',
+  ].forEach((key) => validateStringArray(options, key, errors));
+  if (options.markdownStripSelectors !== undefined) {
+    errors.push(...validateMarkdownStripSelectors(options.markdownStripSelectors));
+  }
+  if (options.trailingSlash !== undefined && !['never', 'always', 'preserve'].includes(options.trailingSlash)) {
+    errors.push("Option 'trailingSlash' must be one of: never, always, preserve.");
+  }
+  if (options.feedMaxItems !== undefined && (!Number.isInteger(options.feedMaxItems) || options.feedMaxItems <= 0)) {
+    errors.push("Option 'feedMaxItems' must be a positive integer.");
+  }
+  if (options.feedLanguage !== undefined) {
+    if (typeof options.feedLanguage !== 'string' || !options.feedLanguage.trim()) {
+      errors.push("Option 'feedLanguage' must be a non-empty string.");
+    } else if (!isValidLanguageTag(options.feedLanguage)) {
+      errors.push(`Option 'feedLanguage' is not a valid BCP 47 language tag: '${options.feedLanguage}'.`);
+    }
+  }
   if (options.lastmodStrategy !== undefined && !['none', 'file-mtime', 'build', 'git'].includes(options.lastmodStrategy)) {
     errors.push("Option 'lastmodStrategy' must be one of: none, file-mtime, build, git.");
   }
@@ -891,21 +994,35 @@ function resolvePageLastmod(page, distDir, options, currentDate, onWarning) {
 }
 
 function createPageModels(htmlInputs, distDir, options, currentDate, siteUrl) {
-  const { selected: dedupedInputs, conflicts } = dedupePageInputs(htmlInputs, options);
-  const lastmodWarnings = [];
-  const models = dedupedInputs.map((input) => {
-    const relativePath = normalizeFilePath(input.relativePath);
+  if (!Array.isArray(htmlInputs)) {
+    throw new Error('htmlInputs must be an array.');
+  }
+
+  const publicGroups = new Map();
+  const excludedModels = [];
+
+  htmlInputs.forEach((input) => {
+    const relativePath = assertSafeRelativePath(input?.relativePath, 'htmlInputs[].relativePath');
     const pagePath = resolvePagePath(relativePath, options);
     const staticExcludeReason = getStaticExcludeReason(relativePath, options);
     const filePageUrl = resolveMarkdownResourceBaseUrl(relativePath, siteUrl, options);
-    const pageUrl = composePageUrl(siteUrl, pagePath, options.routeBasePath || '');
     const analyzed = analyzeHtmlPage(input.htmlContent, {
       audit: options.audit !== false,
       baseUrl: filePageUrl,
       skipMarkdown: Boolean(staticExcludeReason),
+      markdownStripSelectors: options.markdownStripSelectors,
+    });
+    const resolvedTrailingSlash = resolvePageTrailingSlashMode(
+      analyzed.canonicalHref,
+      analyzed.documentBaseUrl || filePageUrl,
+      siteUrl,
+      options.trailingSlash,
+    );
+    const pageUrl = composePageUrl(siteUrl, pagePath, options.routeBasePath || '', {
+      trailingSlash: resolvedTrailingSlash,
     });
     const filePath = input.filePath || resolve(distDir, relativePath);
-    const page = {
+    const model = {
       ...input,
       ...analyzed,
       filePath,
@@ -913,17 +1030,30 @@ function createPageModels(htmlInputs, distDir, options, currentDate, siteUrl) {
       pagePath,
       pageUrl,
       filePageUrl,
-      excludeReason: staticExcludeReason || undefined,
       mtime: input.mtime || null,
     };
+
     if (staticExcludeReason || analyzed.noindex) {
-      page.mtime = null;
-    } else {
-      page.mtime = resolvePageLastmod(page, distDir, options, currentDate, (message) => {
-        lastmodWarnings.push({ path: relativePath, message });
+      excludedModels.push({
+        ...model,
+        excludeReason: staticExcludeReason || 'contains noindex meta tag',
+        mtime: null,
       });
+      return;
     }
-    return page;
+
+    if (!publicGroups.has(pagePath)) {
+      publicGroups.set(pagePath, []);
+    }
+    publicGroups.get(pagePath).push(model);
+  });
+
+  const { selected: selectedPublicModels, conflicts } = resolvePagePathConflicts(publicGroups, options);
+  const lastmodWarnings = [];
+  selectedPublicModels.forEach((page) => {
+    page.mtime = resolvePageLastmod(page, distDir, options, currentDate, (message) => {
+      lastmodWarnings.push({ path: page.relativePath, message });
+    });
   });
 
   if (lastmodWarnings.length > 0) {
@@ -938,6 +1068,9 @@ function createPageModels(htmlInputs, distDir, options, currentDate, siteUrl) {
       );
     }
   }
+
+  const models = [...selectedPublicModels, ...excludedModels]
+    .sort((a, b) => compareCodeUnits(a.relativePath, b.relativePath));
 
   return { models, conflicts };
 }
@@ -977,6 +1110,65 @@ export function logRobotsPreservation(compatibility, logger) {
   }
 }
 
+function resolveFeedChannelLanguage(pages, explicitLanguage, fallbackLanguage) {
+  if (typeof explicitLanguage === 'string' && explicitLanguage.trim()) {
+    return explicitLanguage.trim();
+  }
+  if (pages.length > 0 && pages.every((page) => typeof page.lang === 'string' && page.lang.trim() !== '')) {
+    const uniqueLangs = new Set(pages.map((page) => page.lang.trim().toLowerCase()));
+    if (uniqueLangs.size === 1) {
+      return pages[0].lang.trim();
+    }
+  }
+  return fallbackLanguage;
+}
+
+function countUnreferencedMirrors(llmsContent, generatedMirrors, { siteUrl, routeBasePath }) {
+  const cleaned = String(llmsContent || '').replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|<!--[\s\S]*?-->|`[^`\n]*`/g, ' ');
+  const baseRoute = routeBasePath === '/' ? '' : routeBasePath.replace(/^\/+|\/+$/g, '');
+  const scopeBaseUrl = `${siteUrl.replace(/\/+$/, '')}/${baseRoute ? `${baseRoute}/` : ''}`;
+  let siteOrigin;
+  try {
+    siteOrigin = new URL(siteUrl).origin;
+  } catch {
+    return generatedMirrors.length;
+  }
+
+  const referencedPathnames = new Set();
+  const addRef = (rawRef) => {
+    const trimmed = String(rawRef || '').replace(/^<|>$/g, '').replace(/[.,;:]+$/, '').trim();
+    if (!trimmed) return;
+    try {
+      const resolved = new URL(trimmed, scopeBaseUrl);
+      if (resolved.origin === siteOrigin) {
+        referencedPathnames.add(resolved.pathname);
+      }
+    } catch {
+      // Ignore unparseable references inside preserved llms.txt.
+    }
+  };
+
+  const markdownLink = /\]\(\s*([^)\s]+)\s*\)/g;
+  const bareUrl = /https?:\/\/[^\s<>"')\]]+/g;
+  let match;
+  while ((match = markdownLink.exec(cleaned)) !== null) addRef(match[1]);
+  while ((match = bareUrl.exec(cleaned)) !== null) addRef(match[0]);
+
+  let unreferenced = 0;
+  for (const mirror of generatedMirrors) {
+    let mirrorPathname;
+    try {
+      mirrorPathname = new URL(mirror.url, scopeBaseUrl).pathname;
+    } catch {
+      mirrorPathname = `/${baseRoute ? `${baseRoute}/` : ''}${mirror.filename}`;
+    }
+    if (!referencedPathnames.has(mirrorPathname)) {
+      unreferenced += 1;
+    }
+  }
+  return unreferenced;
+}
+
 export function logFileCompatibility(compatibility, logger = console) {
   const decisions = compatibility?.decisions || [];
   if (decisions.length === 0) return;
@@ -1003,6 +1195,14 @@ export function logFileCompatibility(compatibility, logger = console) {
   if (overwritten.length > 0) {
     logger.warn(
       `[vite-plugin-geo] Overwrote ${overwritten.length} existing user file(s) because fileConflict='overwrite': ${summarize(overwritten)}.`,
+    );
+  }
+  if (compatibility?.unreferencedMirrorCount > 0) {
+    const totalMirrors = compatibility.preservedLlmsMirrorCount ?? compatibility.unreferencedMirrorCount;
+    logger.warn(
+      `[vite-plugin-geo] ${totalMirrors} HTML page(s) received <link rel="alternate" type="text/markdown">, `
+      + `but preserved handwritten llms.txt lacks links to ${compatibility.unreferencedMirrorCount} of ${totalMirrors} generated .md mirror(s). `
+      + "Crawlers starting from /llms.txt will not discover them unless fileConflict: 'overwrite' is set or .md links are added manually.",
     );
   }
 }
@@ -1060,6 +1260,8 @@ export async function buildGeoGenerationPlan({
         routeConflicts,
         siteUrl,
         routeBasePath,
+        lastmodStrategy: normalizedOptions.lastmodStrategy,
+        generateFeed: options.generateFeed !== false,
         fileCompatibility: { policy: fileConflict, decisions: [] },
         preservedFiles: [],
         ...(options.audit !== false ? { audit: { checkedPages: 0, diagnostics: [] } } : {}),
@@ -1099,7 +1301,8 @@ export async function buildGeoGenerationPlan({
       page.pagePath,
       normalizedOptions.llmsMdMirrorStyle,
     );
-    const generatedMarkdownUrl = normalizedOptions.llmsMdMirror !== false
+    const mirrorEligible = shouldGenerateMarkdownMirror(page, normalizedOptions);
+    const generatedMarkdownUrl = mirrorEligible
       ? composePageUrl(siteUrl, mirrorRelativePath, routeBasePath)
       : null;
     const existingMarkdownUrl = resolveMarkdownAlternateUrl(page.htmlContent, pageUrl, {
@@ -1111,6 +1314,7 @@ export async function buildGeoGenerationPlan({
       && existingMarkdownUrl === generatedMarkdownUrl
       && isManagedGeneratedFile(mirrorRelativePath, existingMirrorContent)
     );
+    page.mirrorEligible = mirrorEligible;
     page.mirrorRelativePath = mirrorRelativePath;
     page.markdownUrl = existingMarkdownUrl || generatedMarkdownUrl;
     page.hasExistingMarkdownAlternate = Boolean(existingMarkdownUrl) && !hasManagedMirror;
@@ -1190,16 +1394,23 @@ export async function buildGeoGenerationPlan({
     }));
   }
 
+  const generatedMirrors = [];
   if (generatorOptions.llmsMdMirror !== false) {
     pageModels
-      .filter((page) => !page.hasExistingMarkdownAlternate)
+      .filter((page) => page.mirrorEligible && !page.hasExistingMarkdownAlternate)
       .forEach((page) => {
         const safeSourcePath = sanitizeControlChars(page.relativePath).replace(/-->/g, '--&gt;');
-        addFile(
+        const added = addFile(
           page.mirrorRelativePath,
           `<!-- ${GENERATED_FILE_MARKER}; source: ${safeSourcePath} -->\n\n${composeMarkdownMirrorContent(page)}\n`,
           { markManaged: false },
         );
+        if (added) {
+          generatedMirrors.push({
+            filename: page.mirrorRelativePath,
+            url: page.markdownUrl,
+          });
+        }
       });
   }
 
@@ -1240,24 +1451,94 @@ export async function buildGeoGenerationPlan({
 
   const htmlUpdates = [];
   const discoveryByPath = new Map();
-  const feedHref = `${routeBasePath || '/'}feed.xml`.replace(/\/{2,}/g, '/');
+  const buildFeedHref = (filename) => `${routeBasePath || '/'}${filename}`.replace(/\/{2,}/g, '/');
+  const toFeedItem = (page) => ({
+    url: page.pageUrl,
+    title: page.title || 'Untitled',
+    description: page.description || '',
+    mtime: page.mtime,
+  });
+
   if (options.generateFeed !== false) {
-    const feedPages = pageModels.map((page) => ({
-      url: composePageUrl(siteMetadata.url, page.pagePath, routeBasePath),
-      title: page.title || 'Untitled',
-      description: page.description || '',
-      mtime: page.mtime,
-    }));
-    addFile('feed.xml', generateFeedXml(feedPages, {
-      ...siteMetadata,
-      feedUrl: composePageUrl(siteMetadata.url, 'feed.xml', routeBasePath),
-    }, currentDate));
+    const filteredFeedPages = filterFeedPages(pageModels, normalizedOptions);
+    if (options.feedByLocale === true) {
+      const primaryLocale = resolvePrimaryFeedLocale(normalizedOptions, homePage.lang);
+      const primaryLocaleKey = primaryLocale.toLowerCase();
+      const localeGroups = new Map();
+      filteredFeedPages.forEach((page) => {
+        const locKey = resolvePageLocaleKey(page.lang, primaryLocale);
+        if (!localeGroups.has(locKey)) {
+          localeGroups.set(locKey, []);
+        }
+        localeGroups.get(locKey).push(page);
+      });
+
+      const emittedFeedByLocale = new Map();
+      Array.from(localeGroups.keys())
+        .sort(compareCodeUnits)
+        .forEach((locKey) => {
+          const group = localeGroups.get(locKey);
+          const feedFilename = locKey === primaryLocaleKey ? 'feed.xml' : `${locKey}/feed.xml`;
+          const feedUrl = composePageUrl(siteMetadata.url, feedFilename, routeBasePath);
+          const feedHref = buildFeedHref(feedFilename);
+          const firstLang = typeof group[0]?.lang === 'string' ? group[0].lang.trim() : '';
+          const channelLang = (firstLang && isValidLanguageTag(firstLang)) ? firstLang : locKey;
+          addFile(
+            feedFilename,
+            generateFeedXml(
+              group.map(toFeedItem),
+              { ...siteMetadata, lang: channelLang, feedUrl },
+              currentDate,
+              { maxItems: options.feedMaxItems },
+            ),
+          );
+          emittedFeedByLocale.set(locKey, { href: feedHref, url: feedUrl });
+        });
+
+      pageModels.forEach((page) => {
+        const locKey = resolvePageLocaleKey(page.lang, primaryLocale);
+        const feedInfo = emittedFeedByLocale.get(locKey);
+        page.feedHref = feedInfo ? feedInfo.href : null;
+        page.feedUrl = feedInfo ? feedInfo.url : null;
+      });
+    } else {
+      const rootFeedHref = buildFeedHref('feed.xml');
+      const rootFeedUrl = composePageUrl(siteMetadata.url, 'feed.xml', routeBasePath);
+      const resolvedLang = resolveFeedChannelLanguage(
+        filteredFeedPages,
+        options.feedLanguage,
+        siteMetadata.lang,
+      );
+      addFile(
+        'feed.xml',
+        generateFeedXml(
+          filteredFeedPages.map(toFeedItem),
+          { ...siteMetadata, lang: resolvedLang, feedUrl: rootFeedUrl },
+          currentDate,
+          { maxItems: options.feedMaxItems },
+        ),
+      );
+      pageModels.forEach((page) => {
+        if (options.feedLanguage && !matchesFeedLanguage(page.lang, options.feedLanguage)) {
+          page.feedHref = null;
+          page.feedUrl = null;
+        } else {
+          page.feedHref = rootFeedHref;
+          page.feedUrl = rootFeedUrl;
+        }
+      });
+    }
+  } else {
+    pageModels.forEach((page) => {
+      page.feedHref = null;
+      page.feedUrl = null;
+    });
   }
 
   pageModels.forEach((page) => {
     let content = page.htmlContent;
-    if (options.generateFeed !== false) {
-      content = injectFeedLink(content, feedHref);
+    if (options.generateFeed !== false && page.feedHref) {
+      content = injectFeedLink(content, page.feedHref);
     }
     content = injectLlmsDiscoveryLinks(content, {
       markdownUrl: page.markdownUrl,
@@ -1281,6 +1562,22 @@ export async function buildGeoGenerationPlan({
     addFile('sku.md', generateSkuMd(skuMdOptions, { siteUrl }));
   }
 
+  const fileCompatibility = {
+    policy: fileConflict,
+    decisions: fileDecisions,
+  };
+  const llmsPreserved = fileDecisions.some(
+    ({ filename, decision }) => filename === 'llms.txt' && decision === 'preserve',
+  );
+  if (llmsPreserved && generatedMirrors.length > 0) {
+    fileCompatibility.preservedLlmsMirrorCount = generatedMirrors.length;
+    fileCompatibility.unreferencedMirrorCount = countUnreferencedMirrors(
+      existingAssets.get('llms.txt'),
+      generatedMirrors,
+      { siteUrl, routeBasePath },
+    );
+  }
+
   return {
     files,
     htmlUpdates,
@@ -1292,12 +1589,11 @@ export async function buildGeoGenerationPlan({
       routeConflicts,
       siteUrl,
       routeBasePath,
+      lastmodStrategy: normalizedOptions.lastmodStrategy,
+      generateFeed: options.generateFeed !== false,
       sitemapCompatibility,
       robotsCompatibility,
-      fileCompatibility: {
-        policy: fileConflict,
-        decisions: fileDecisions,
-      },
+      fileCompatibility,
       preservedFiles: fileDecisions
         .filter(({ decision }) => decision === 'preserve')
         .map(({ filename }) => filename),

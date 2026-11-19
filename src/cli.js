@@ -32,9 +32,13 @@ Options:
   --package-json-path <path>   package.json path (default: ./package.json)
   --strip-path-prefixes <list> Comma-separated prefixes (default: src/pages/)
   --exclude-patterns <list>    Comma-separated glob patterns
+  --trailing-slash <mode>      never | always | preserve (default: never)
   --lastmod-strategy <value>   none | file-mtime | build | git (default: none)
   --lastmod-ignore <list>      Comma-separated glob patterns skipped by lastmod
   --llms-md-mirror-style <value> append | replace (default: append)
+  --llms-md-mirror-include <list> Comma-separated globs selecting pages for .md mirrors
+  --llms-md-mirror-exclude <list> Comma-separated globs excluding pages from .md mirrors
+  --markdown-strip-selectors <list> Comma-separated CSS selectors stripped before Markdown conversion
   --robots-directives <list>   Comma-separated robots directives
   --sitemap-url <path-or-url>  Public sitemap URL/path used by robots.txt and llms.txt
   --sitemap-conflict <mode>    preserve | error | overwrite (default: preserve when unset)
@@ -47,6 +51,11 @@ Options:
   --llms-md-mirror / --no-llms-md-mirror
   --generate-humans / --no-generate-humans
   --generate-feed / --no-generate-feed
+  --feed-include-patterns <list> Comma-separated globs limiting pages included in RSS feeds
+  --feed-exclude-patterns <list> Comma-separated globs excluding pages from RSS feeds
+  --feed-max-items <number>    Maximum number of items emitted per RSS feed
+  --feed-language <tag>        Explicit BCP 47 <language> tag for generated RSS feeds
+  --feed-by-locale / --no-feed-by-locale Toggle per-locale RSS feed generation
   --hreflang-from-html / --no-hreflang-from-html
   --audit / --no-audit        Build diagnostics (default: enabled; never fails on findings)
   --fail-on-audit <level>     none | warning | advice (default: none)
@@ -69,6 +78,11 @@ function parseListValue(value) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseStrictIntegerValue(value) {
+  const trimmed = String(value).trim();
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
 }
 
 function parseBooleanValue(value, flagName) {
@@ -152,7 +166,10 @@ const CLI_ARG_DEFS = [
     parse: (value) => (value === 'false' ? false : value),
   },
   { flag: '--lastmod-strategy', key: 'lastmodStrategy' },
+  { flag: '--trailing-slash', key: 'trailingSlash' },
   { flag: '--llms-md-mirror-style', key: 'llmsMdMirrorStyle' },
+  { flag: '--feed-language', key: 'feedLanguage' },
+  { flag: '--feed-max-items', key: 'feedMaxItems', parse: parseStrictIntegerValue },
   { flag: '--sitemap-url', key: 'sitemapUrl' },
   { flag: '--sitemap-conflict', key: 'sitemapConflict' },
   { flag: '--file-conflict', key: 'fileConflict' },
@@ -166,6 +183,11 @@ const CLI_ARG_DEFS = [
   { flag: '--exclude-patterns', key: 'excludePatterns', parse: parseListValue },
   { flag: '--robots-directives', key: 'robotsDirectives', parse: parseListValue },
   { flag: '--lastmod-ignore', key: 'lastmodIgnore', parse: parseListValue },
+  { flag: '--markdown-strip-selectors', key: 'markdownStripSelectors', parse: parseListValue },
+  { flag: '--llms-md-mirror-include', key: 'llmsMdMirrorInclude', parse: parseListValue },
+  { flag: '--llms-md-mirror-exclude', key: 'llmsMdMirrorExclude', parse: parseListValue },
+  { flag: '--feed-include-patterns', key: 'feedIncludePatterns', parse: parseListValue },
+  { flag: '--feed-exclude-patterns', key: 'feedExcludePatterns', parse: parseListValue },
   // Boolean flags (positive)
   { flag: '--pretty-urls', key: 'prettyUrls', value: true },
   { flag: '--sitemap-index', key: 'sitemapIndex', value: true },
@@ -174,6 +196,7 @@ const CLI_ARG_DEFS = [
   { flag: '--llms-md-mirror', key: 'llmsMdMirror', value: true },
   { flag: '--generate-humans', key: 'generateHumans', value: true },
   { flag: '--generate-feed', key: 'generateFeed', value: true },
+  { flag: '--feed-by-locale', key: 'feedByLocale', value: true },
   { flag: '--hreflang-from-html', key: 'hreflangFromHtml', value: true },
   { flag: '--audit', key: 'audit', value: true },
   { flag: '--debug', key: 'debug', value: true },
@@ -186,6 +209,7 @@ const CLI_ARG_DEFS = [
   { flag: '--no-llms-md-mirror', key: 'llmsMdMirror', value: false },
   { flag: '--no-generate-humans', key: 'generateHumans', value: false },
   { flag: '--no-generate-feed', key: 'generateFeed', value: false },
+  { flag: '--no-feed-by-locale', key: 'feedByLocale', value: false },
   { flag: '--no-hreflang-from-html', key: 'hreflangFromHtml', value: false },
   { flag: '--no-audit', key: 'audit', value: false },
   { flag: '--no-verify', key: 'verify', value: false },
@@ -329,6 +353,7 @@ export async function runSeoCliGenerate(rawOptions = {}, runtime = {}) {
       distDir,
       sourceHtmlDir: options.sourceHtmlDir || resolve(cwd, 'src/pages'),
       report: plan.report,
+      options,
     }));
   }
 

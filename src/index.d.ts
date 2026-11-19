@@ -1,6 +1,7 @@
 import type { Plugin } from 'vite';
 
 export type LastmodStrategy = 'none' | 'file-mtime' | 'build' | 'git';
+export type TrailingSlashMode = 'never' | 'always' | 'preserve';
 export type LlmsMdMirrorStyle = 'append' | 'replace';
 export type SitemapConflict = 'preserve' | 'error' | 'overwrite';
 export type FileConflict = 'preserve' | 'error' | 'overwrite';
@@ -49,15 +50,19 @@ export interface GeoPageModel {
   description: string;
   lang: string;
   noindex: boolean;
+  canonicalHref?: string;
   hreflang: GeoHreflangEntry[];
   documentBaseUrl: string;
   markdown: string;
   mtime: string | null;
   audit?: GeoAuditFacts;
   excludeReason?: string;
+  mirrorEligible?: boolean;
   mirrorRelativePath?: string;
   markdownUrl?: string | null;
   hasExistingMarkdownAlternate?: boolean;
+  feedHref?: string | null;
+  feedUrl?: string | null;
 }
 
 export interface SkuMdOptions {
@@ -77,6 +82,7 @@ export interface GeoGeneratorOptions {
   sourceHtmlDir?: string;
   packageJsonPath?: string | false;
   prettyUrls?: boolean;
+  trailingSlash?: TrailingSlashMode;
   lastmodStrategy?: LastmodStrategy;
   lastmodIgnore?: string[];
   /**
@@ -104,9 +110,17 @@ export interface GeoGeneratorOptions {
   routeConflict?: RouteConflict;
   llmsMdMirror?: boolean;
   llmsMdMirrorStyle?: LlmsMdMirrorStyle;
+  llmsMdMirrorInclude?: string[];
+  llmsMdMirrorExclude?: string[];
+  markdownStripSelectors?: string[];
   llmsSections?: Record<string, string | string[]>;
   llmsClassify?: (page: LlmsPageInfo) => string | null | undefined;
   generateFeed?: boolean;
+  feedIncludePatterns?: string[];
+  feedExcludePatterns?: string[];
+  feedMaxItems?: number;
+  feedLanguage?: string;
+  feedByLocale?: boolean;
   generateHumans?: boolean;
   generateRobots?: boolean;
   robotsDirectives?: string[];
@@ -176,6 +190,8 @@ export interface GeoFileCompatibilityDecision {
 export interface GeoFileCompatibility {
   policy: FileConflict;
   decisions: GeoFileCompatibilityDecision[];
+  preservedLlmsMirrorCount?: number;
+  unreferencedMirrorCount?: number;
 }
 
 export interface ReportWritableStream {

@@ -86,4 +86,61 @@ describe('duplicate public routes', () => {
     expect(() => dedupeHtmlFilesByPagePath(htmlFiles, f.distDir, {}))
       .toThrow(/Route conflict/);
   });
+
+  it('ignores excluded and noindex localized 404 duplicates under default routeConflict: error', async () => {
+    const noindexPage = (title) => (
+      `<html lang="ar"><head><title>${title}</title><meta name="robots" content="noindex,follow"></head><body><h1>${title}</h1></body></html>`
+    );
+    const f = fixture({
+      'index.html': page('Home'),
+      'ar/404.html': noindexPage('404 Flat'),
+      'ar/404/index.html': noindexPage('404 Dir'),
+    });
+
+    const plan = await planFor(f);
+    expect(plan.report.routeConflicts).toEqual([]);
+    expect(plan.report.totalHtmlFiles).toBe(3);
+    expect(plan.report.includedHtmlFiles).toBe(1);
+    expect(plan.report.excludedHtmlFiles).toBe(2);
+    expect(plan.report.excludedDetails).toEqual([
+      { path: 'ar/404.html', reason: 'default exclude' },
+      { path: 'ar/404/index.html', reason: 'contains noindex meta tag' },
+    ]);
+
+    const files = plan.files.map(({ filename }) => filename);
+    expect(files).not.toContain('ar/404.md');
+    expect(plan.files.find(({ filename }) => filename === 'sitemap.xml')?.content).not.toContain('404');
+    expect(plan.files.find(({ filename }) => filename === 'llms.txt')?.content).not.toContain('404');
+    expect(plan.files.find(({ filename }) => filename === 'feed.xml')?.content).not.toContain('404');
+  });
+
+  it('resolves mixed public and noindex or pattern-excluded pages on the same route without throwing', async () => {
+    const f = fixture({
+      'index.html': '<html lang="en"><head><title>Home</title><meta name="description" content="Home desc"></head><body><h1>Home</h1><a href="/guide">Public Guide</a><a href="/guide/index.html">Old Guide</a></body></html>',
+      'guide.html': page('Public Guide'),
+      'guide/index.html': '<html lang="en"><head><title>Old Guide</title><meta name="robots" content="noindex"></head><body><h1>Old Guide</h1></body></html>',
+      'private.html': page('Private Flat'),
+      'private/index.html': page('Public Private Dir'),
+    });
+
+    const plan = await planFor(f, {
+      excludePatterns: ['private.html'],
+    });
+
+    expect(plan.report.routeConflicts).toEqual([]);
+    expect(plan.report.includedHtmlFiles).toBe(3);
+    expect(plan.report.excludedHtmlFiles).toBe(2);
+
+    const sitemap = plan.files.find(({ filename }) => filename === 'sitemap.xml')?.content || '';
+    expect(sitemap).toContain('<loc>https://example.test/guide</loc>');
+    expect(sitemap).toContain('<loc>https://example.test/private</loc>');
+
+    // Excluded noindex page still triggers anchor-noindex when linked directly,
+    // while public /guide route stays non-noindex.
+    const noindexWarnings = plan.report.audit.diagnostics
+      .filter((item) => item.rule === 'anchor-noindex')
+      .map((item) => item.evidence);
+    expect(noindexWarnings).toHaveLength(1);
+    expect(noindexWarnings[0]).toContain('/guide/index.html');
+  });
 });

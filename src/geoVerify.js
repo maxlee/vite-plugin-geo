@@ -9,7 +9,13 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import { parse } from 'parse5';
 import { collectAuditFacts } from './geoAudit.js';
-import { validateGeoOptions } from './geoBuildPipeline.js';
+import {
+  filterFeedPages,
+  resolvePageLocaleKey,
+  resolvePageTrailingSlashMode,
+  resolvePrimaryFeedLocale,
+  validateGeoOptions,
+} from './geoBuildPipeline.js';
 import {
   classifyHtmlFiles,
   compareCodeUnits,
@@ -22,6 +28,7 @@ import {
   resolveMarkdownMirrorPath,
   resolvePagePath,
   resolvePagePathConflicts,
+  shouldGenerateMarkdownMirror,
 } from './geoGenerator.js';
 import { normalizeSiteDomain, resolvePackageJsonSiteDomain } from './geoMetadataResolver.js';
 
@@ -189,10 +196,11 @@ function normalizeUrlKey(value, siteUrl) {
 
 function resolveArtifactFile(distDir, relativePath, stripPrefixes = []) {
   const normalized = normalizeFilePath(relativePath);
+  const withoutTrailingSlash = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
   const baseCandidates = normalized === ''
     ? ['index.html']
     : (normalized.endsWith('/')
-      ? [`${normalized}index.html`]
+      ? (withoutTrailingSlash === '' ? ['index.html'] : [`${normalized}index.html`, `${withoutTrailingSlash}.html`])
       : [normalized, `${normalized}/index.html`, `${normalized}.html`]);
   // Pages built from an intermediate directory (for example dist/src/pages)
   // still map to public routes through stripPathPrefixes. Accept the prefixed
@@ -200,7 +208,9 @@ function resolveArtifactFile(distDir, relativePath, stripPrefixes = []) {
   const prefixedCandidates = normalized === ''
     ? stripPrefixes.map((prefix) => `${prefix}/index.html`)
     : stripPrefixes.flatMap((prefix) => (normalized.endsWith('/')
-      ? [`${prefix}/${normalized}index.html`]
+      ? (withoutTrailingSlash === ''
+        ? [`${prefix}/index.html`]
+        : [`${prefix}/${normalized}index.html`, `${prefix}/${withoutTrailingSlash}.html`])
       : [`${prefix}/${normalized}`, `${prefix}/${normalized}/index.html`, `${prefix}/${normalized}.html`]));
   const candidates = [...baseCandidates, ...prefixedCandidates];
 
@@ -255,6 +265,7 @@ function collectSitemapLocs(distDir, rootFile, context) {
 }
 
 function extractDocumentUrls(content) {
+  const stripped = String(content || '').replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|<!--[\s\S]*?-->|`[^`\n]*`/g, ' ');
   const urls = new Set();
   const markdownLink = /\]\(\s*([^)\s]+)\s*\)/g;
   const bareUrl = /https?:\/\/[^\s<>"')\]]+/g;
@@ -265,9 +276,32 @@ function extractDocumentUrls(content) {
     if (trimmed) urls.add(trimmed);
   };
 
-  while ((match = markdownLink.exec(content)) !== null) add(match[1]);
-  while ((match = bareUrl.exec(content)) !== null) add(match[0]);
+  while ((match = markdownLink.exec(stripped)) !== null) add(match[1]);
+  while ((match = bareUrl.exec(stripped)) !== null) add(match[0]);
   return [...urls];
+}
+
+function findFeedFilesInDist(distDir) {
+  const found = [];
+  const visit = (directory) => {
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.vite-plugin-geo-')) continue;
+      const entryPath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath);
+      } else if (entry.isFile() && entry.name.toLowerCase() === 'feed.xml') {
+        found.push(normalizeFilePath(relative(distDir, entryPath)));
+      }
+    }
+  };
+  visit(distDir);
+  return found.sort(compareCodeUnits);
 }
 
 function extractFeedUrls(content) {
@@ -493,9 +527,49 @@ export function verifyGeoOutput({
   });
   const pagesByPath = new Map(selectedPages.map((page) => [page.pagePath, page]));
 
+  const pageInspectionByPath = new Map();
+  for (const [pagePath, page] of pagesByPath) {
+    const html = readText(page.filePath);
+    if (html === null) continue;
+    let facts = null;
+    try {
+      facts = collectAuditFacts(parse(html));
+    } catch {
+      facts = null;
+    }
+    const filePageUrl = composePageUrl(
+      resolvedSiteUrl,
+      resolvePagePath(page.relativePath, { ...options, prettyUrls: false }),
+      resolvedRouteBasePath,
+    );
+    let documentBaseUrl = filePageUrl;
+    if (facts?.baseHref !== null && facts?.baseHref !== undefined) {
+      try {
+        documentBaseUrl = new URL(facts.baseHref, filePageUrl).href;
+      } catch {
+        documentBaseUrl = filePageUrl;
+      }
+    }
+    pageInspectionByPath.set(pagePath, { html, facts, filePageUrl, documentBaseUrl });
+  }
+
   const pageUrlByPath = new Map();
+  const expectedUrlByKey = new Map();
   for (const [pagePath] of pagesByPath) {
-    pageUrlByPath.set(pagePath, composePageUrl(resolvedSiteUrl, pagePath, resolvedRouteBasePath));
+    const inspection = pageInspectionByPath.get(pagePath);
+    const canonicalHref = (inspection?.facts?.canonicals || []).find((href) => String(href || '').trim()) || '';
+    const pageTrailingSlash = resolvePageTrailingSlashMode(
+      canonicalHref,
+      inspection?.documentBaseUrl || inspection?.filePageUrl || resolvedSiteUrl,
+      resolvedSiteUrl,
+      options.trailingSlash,
+    );
+    const pageUrl = composePageUrl(resolvedSiteUrl, pagePath, resolvedRouteBasePath, {
+      trailingSlash: pageTrailingSlash,
+    });
+    pageUrlByPath.set(pagePath, pageUrl);
+    const urlKey = normalizeUrlKey(pageUrl, resolvedSiteUrl);
+    if (urlKey) expectedUrlByKey.set(urlKey, pageUrl);
   }
 
   let sitemapFile = null;
@@ -568,12 +642,29 @@ export function verifyGeoOutput({
       const unmapped = [];
       const prefixed = [];
       const htmlExtension = [];
+      const trailingSlashMismatches = [];
+      const strictTrailingSlash = options.trailingSlash === 'always' || options.trailingSlash === 'never';
 
       for (const loc of sitemap.locs) {
         const key = normalizeUrlKey(loc, resolvedSiteUrl);
         if (key) {
           if (seenKeys.has(key)) duplicates.push(loc);
           seenKeys.add(key);
+
+          if (strictTrailingSlash && expectedUrlByKey.has(key)) {
+            const expectedUrl = expectedUrlByKey.get(key);
+            try {
+              const locUrl = new URL(loc);
+              const expectedObj = new URL(expectedUrl);
+              if (expectedObj.pathname !== '/') {
+                if (locUrl.pathname !== expectedObj.pathname) trailingSlashMismatches.push(loc);
+              } else if (options.trailingSlash === 'always' && !String(loc).split(/[?#]/, 1)[0].endsWith('/')) {
+                trailingSlashMismatches.push(loc);
+              }
+            } catch {
+              // Ignore unparseable URLs here; unmapped check covers them.
+            }
+          }
         }
 
         const relativePath = toDistRelative(loc, context);
@@ -627,6 +718,15 @@ export function verifyGeoOutput({
           sitemapFile,
           `prettyUrls 下 sitemap <loc> 仍以 .html 结尾：${summarize(htmlExtension)}`,
           '使用无扩展名公开地址，或关闭 prettyUrls 以匹配实际路由。',
+        );
+      }
+      if (trailingSlashMismatches.length > 0) {
+        add(
+          'warning',
+          'sitemap-trailing-slash',
+          sitemapFile,
+          `sitemap <loc> 尾斜杠不符合 trailingSlash='${options.trailingSlash}'：${summarize(trailingSlashMismatches)}`,
+          '统一 sitemap 中的页面 URL 尾斜杠风格。',
         );
       }
       if (pagesByPath.size > 0 && sitemap.locs.length < pagesByPath.size) {
@@ -709,44 +809,38 @@ export function verifyGeoOutput({
   }
 
   const markdownMirrorPaths = [];
+  const strictTrailingSlash = options.trailingSlash === 'always' || options.trailingSlash === 'never';
   for (const page of pagesByPath.values()) {
-    const html = readText(page.filePath);
-    if (html === null) continue;
-
-    let facts = null;
-    try {
-      facts = collectAuditFacts(parse(html));
-    } catch {
-      facts = null;
-    }
-
+    const inspection = pageInspectionByPath.get(page.pagePath);
+    if (!inspection) continue;
+    const { facts, documentBaseUrl } = inspection;
     const expectedPageUrl = pageUrlByPath.get(page.pagePath);
-    const filePageUrl = composePageUrl(
-      resolvedSiteUrl,
-      resolvePagePath(page.relativePath, { ...options, prettyUrls: false }),
-      resolvedRouteBasePath,
-    );
-    let documentBaseUrl = filePageUrl;
-    if (facts?.baseHref !== null && facts?.baseHref !== undefined) {
-      try {
-        documentBaseUrl = new URL(facts.baseHref, filePageUrl).href;
-      } catch {
-        documentBaseUrl = filePageUrl;
-      }
-    }
 
     if (facts) {
       const canonicalUrls = (facts.canonicals || []).filter((href) => String(href).trim());
       for (const href of canonicalUrls) {
-        let resolvedCanonical;
+        let resolvedUrl;
         try {
-          resolvedCanonical = new URL(href, documentBaseUrl).href;
+          resolvedUrl = new URL(href, documentBaseUrl);
         } catch {
           continue;
         }
+        const resolvedCanonical = resolvedUrl.href;
         const canonicalKey = normalizeUrlKey(resolvedCanonical, resolvedSiteUrl);
         const expectedKey = normalizeUrlKey(expectedPageUrl, resolvedSiteUrl);
-        if (canonicalKey && expectedKey && canonicalKey !== expectedKey
+        let trailingMismatch = false;
+        if (strictTrailingSlash && canonicalKey && expectedKey && canonicalKey === expectedKey) {
+          const expectedObj = new URL(expectedPageUrl);
+          if (resolvedUrl.pathname !== expectedObj.pathname) {
+            const directoryMatch = !prettyUrls
+              && /(^|\/)index\.html?$/i.test(expectedObj.pathname)
+              && resolvedUrl.pathname === (expectedObj.pathname.replace(/index\.html?$/i, '') || '/');
+            if (!directoryMatch) {
+              trailingMismatch = true;
+            }
+          }
+        }
+        if (canonicalKey && expectedKey && (canonicalKey !== expectedKey || trailingMismatch)
           && canonicalKey.startsWith(`${new URL(resolvedSiteUrl).origin}/`)) {
           add(
             'warning',
@@ -761,22 +855,27 @@ export function verifyGeoOutput({
 
     if (!mirrorEnabled) continue;
 
-    const expectedMirrorPath = resolveMarkdownMirrorPath(page.pagePath, mirrorStyle);
-    markdownMirrorPaths.push(expectedMirrorPath);
+    const declared = facts ? declaredMarkdownUrls(facts, documentBaseUrl) : [];
+    const mirrorExpected = shouldGenerateMarkdownMirror(page, options);
+    if (!mirrorExpected && declared.length === 0) continue;
 
-    if (stripPrefixes.some((prefix) => (
-      expectedMirrorPath === prefix || expectedMirrorPath.startsWith(`${prefix}/`)
-    )) || (prettyUrls && MARKDOWN_EXTENSION_PATTERN.test(expectedMirrorPath))) {
-      add(
-        'warning',
-        'markdown-mirror-path',
-        page.relativePath,
-        `Markdown 镜像路径不是公开路径：${expectedMirrorPath}`,
-        '镜像应基于公开 pagePath 派生，不能包含中间构建目录或双扩展名。',
-      );
+    const expectedMirrorPath = resolveMarkdownMirrorPath(page.pagePath, mirrorStyle);
+    if (mirrorExpected) {
+      markdownMirrorPaths.push(expectedMirrorPath);
+
+      if (stripPrefixes.some((prefix) => (
+        expectedMirrorPath === prefix || expectedMirrorPath.startsWith(`${prefix}/`)
+      )) || (prettyUrls && MARKDOWN_EXTENSION_PATTERN.test(expectedMirrorPath))) {
+        add(
+          'warning',
+          'markdown-mirror-path',
+          page.relativePath,
+          `Markdown 镜像路径不是公开路径：${expectedMirrorPath}`,
+          '镜像应基于公开 pagePath 派生，不能包含中间构建目录或双扩展名。',
+        );
+      }
     }
 
-    const declared = facts ? declaredMarkdownUrls(facts, documentBaseUrl) : [];
     if (declared.length > 0) {
       for (const url of declared) {
         const relativePath = toDistRelative(url, context);
@@ -802,7 +901,7 @@ export function verifyGeoOutput({
           );
         }
       }
-    } else if (!fileExists(join(resolvedDistDir, expectedMirrorPath))) {
+    } else if (mirrorExpected && !fileExists(join(resolvedDistDir, expectedMirrorPath))) {
       add(
         'warning',
         'markdown-mirror-missing',
@@ -847,16 +946,7 @@ export function verifyGeoOutput({
   }
 
   if (options.generateFeed !== false) {
-    const feedContent = readText(join(resolvedDistDir, 'feed.xml'));
-    if (feedContent === null) {
-      add(
-        'warning',
-        'feed-link-invalid',
-        'feed.xml',
-        '产物中缺少 feed.xml',
-        '确认 generateFeed 未被关闭且 feed 未被第三方插件删除。',
-      );
-    } else {
+    const verifyFeedFile = (feedRelPath, feedContent) => {
       const invalid = [];
       for (const url of extractFeedUrls(feedContent)) {
         const relativePath = toDistRelative(url, context);
@@ -871,10 +961,61 @@ export function verifyGeoOutput({
         add(
           'warning',
           'feed-link-invalid',
-          'feed.xml',
-          `feed.xml 引用的地址无法映射到产物或 sitemap：${summarize(invalid)}`,
+          feedRelPath,
+          `${feedRelPath} 引用的地址无法映射到产物或 sitemap：${summarize(invalid)}`,
           '统一 feed 条目与公开页面地址。',
         );
+      }
+    };
+
+    if (options.feedByLocale === true) {
+      const homePage = pagesByPath.get('') || selectedPages[0];
+      const homeLang = homePage ? (pageInspectionByPath.get(homePage.pagePath)?.facts?.lang || '') : '';
+      const primaryLocale = resolvePrimaryFeedLocale(options, homeLang);
+      const primaryLocaleKey = primaryLocale.toLowerCase();
+      const feedCandidatePages = [...pagesByPath.values()].map((page) => ({
+        pagePath: page.pagePath,
+        relativePath: page.relativePath,
+        lang: pageInspectionByPath.get(page.pagePath)?.facts?.lang || '',
+      }));
+      const filteredFeedPages = filterFeedPages(feedCandidatePages, options);
+      const expectedFeedFiles = new Set();
+      for (const page of filteredFeedPages) {
+        const locKey = resolvePageLocaleKey(page.lang, primaryLocale);
+        expectedFeedFiles.add(locKey === primaryLocaleKey ? 'feed.xml' : `${locKey}/feed.xml`);
+      }
+
+      const foundFeedFiles = findFeedFilesInDist(resolvedDistDir);
+      const foundFeedSet = new Set(foundFeedFiles);
+      for (const expectedFeed of [...expectedFeedFiles].sort(compareCodeUnits)) {
+        if (!foundFeedSet.has(expectedFeed)) {
+          add(
+            'warning',
+            'feed-link-invalid',
+            expectedFeed,
+            `产物中缺少 ${expectedFeed}`,
+            '确认 generateFeed 未被关闭且对应语言的 feed 未被第三方插件删除。',
+          );
+        }
+      }
+      for (const feedFile of foundFeedFiles) {
+        const feedContent = readText(join(resolvedDistDir, feedFile));
+        if (feedContent !== null) {
+          verifyFeedFile(feedFile, feedContent);
+        }
+      }
+    } else {
+      const feedContent = readText(join(resolvedDistDir, 'feed.xml'));
+      if (feedContent === null) {
+        add(
+          'warning',
+          'feed-link-invalid',
+          'feed.xml',
+          '产物中缺少 feed.xml',
+          '确认 generateFeed 未被关闭且 feed 未被第三方插件删除。',
+        );
+      } else {
+        verifyFeedFile('feed.xml', feedContent);
       }
     }
   }

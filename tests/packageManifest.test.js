@@ -33,7 +33,7 @@ describe('vite-plugin-geo publish manifest', () => {
   it('points npm entry fields at src/ runtime files and whitelists only publishable paths', () => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
 
-    expect(manifest.version).toBe('0.3.0');
+    expect(manifest.version).toBe('0.4.0');
     expect(manifest).toMatchObject({
       name: 'vite-plugin-geo',
       main: './src/index.js',
@@ -211,14 +211,25 @@ describe('vite-plugin-geo publish manifest', () => {
     expect(license).toContain('Copyright (c) 2026 maxlee');
   });
 
-  it('publishes only the v0.3.0 public option surface', () => {
+  it('publishes only the v0.4.0 public option surface', () => {
     const declarations = readFileSync(join(packageDir, 'src', 'index.d.ts'), 'utf-8');
 
     expect(declarations).toContain("export type LastmodStrategy = 'none' | 'file-mtime' | 'build' | 'git'");
+    expect(declarations).toContain("export type TrailingSlashMode = 'never' | 'always' | 'preserve'");
     expect(declarations).toContain("export type LlmsMdMirrorStyle = 'append' | 'replace'");
     expect(declarations).toContain("export type SitemapConflict = 'preserve' | 'error' | 'overwrite'");
     expect(declarations).toContain("export type FileConflict = 'preserve' | 'error' | 'overwrite'");
     expect(declarations).toContain("export type RouteConflict = 'error' | 'first' | 'last'");
+    expect(declarations).toContain('trailingSlash?: TrailingSlashMode');
+    expect(declarations).toContain('markdownStripSelectors?: string[]');
+    expect(declarations).toContain('llmsMdMirrorInclude?: string[]');
+    expect(declarations).toContain('llmsMdMirrorExclude?: string[]');
+    expect(declarations).toContain('feedIncludePatterns?: string[]');
+    expect(declarations).toContain('feedExcludePatterns?: string[]');
+    expect(declarations).toContain('feedMaxItems?: number');
+    expect(declarations).toContain('feedLanguage?: string');
+    expect(declarations).toContain('feedByLocale?: boolean');
+    expect(declarations).toContain('unreferencedMirrorCount?: number');
     expect(declarations).toContain('fileConflict?: FileConflict');
     expect(declarations).toContain('generateRobots?: boolean');
     expect(declarations).toContain('audit?: boolean');

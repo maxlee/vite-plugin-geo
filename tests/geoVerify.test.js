@@ -321,4 +321,113 @@ describe('geo verify', () => {
     const depthResult = verify(f, { llmsMdMirror: false, generateFeed: false });
     expect(depthResult.warnings.map((w) => w.rule)).toContain('sitemap-index-depth');
   });
+
+  it('ignores URLs inside llms.txt HTML comments, code fences, and inline code while catching real broken links', async () => {
+    const f = fixture();
+    await generate(f, { llmsMdMirror: false, generateFeed: false });
+    writeFileSync(
+      join(f.distDir, 'llms.txt'),
+      [
+        '# Example Site',
+        '',
+        '<!-- Hidden comment link: [Sponsor](https://example.test/sponsor) and https://example.test/hidden-bare -->',
+        '',
+        '```markdown',
+        '- [Example Fence](https://example.test/fence-broken)',
+        'https://example.test/fence-bare',
+        '```',
+        '',
+        '~~~text',
+        'https://example.test/tilde-broken',
+        '~~~',
+        '',
+        'Use `https://example.test/inline-code` or `[Inline](https://example.test/inline-link)` as syntax examples.',
+        '',
+        '## Docs',
+        `- [Home](${siteUrl}): Home page`,
+        `- [About](${siteUrl}/about): About page`,
+      ].join('\n'),
+    );
+
+    const clean = verify(f, { llmsMdMirror: false, generateFeed: false });
+    expect(clean.warnings.map((w) => w.rule)).not.toContain('llms-link-invalid');
+
+    writeFileSync(
+      join(f.distDir, 'llms.txt'),
+      `${readFileSync(join(f.distDir, 'llms.txt'), 'utf-8')}\n- [Broken](${siteUrl}/does-not-exist): Missing\n`,
+    );
+    const broken = verify(f, { llmsMdMirror: false, generateFeed: false });
+    expect(broken.warnings.map((w) => w.rule)).toContain('llms-link-invalid');
+    const brokenEvidence = broken.warnings.find((w) => w.rule === 'llms-link-invalid')?.evidence || '';
+    expect(brokenEvidence).toContain(`${siteUrl}/does-not-exist`);
+    expect(brokenEvidence).not.toContain('sponsor');
+    expect(brokenEvidence).not.toContain('fence-broken');
+    expect(brokenEvidence).not.toContain('tilde-broken');
+    expect(brokenEvidence).not.toContain('inline-code');
+  });
+
+  it('respects llmsMdMirrorInclude/Exclude and trailingSlash in verifyGeoOutput', async () => {
+    const f = fixture();
+    writeFileSync(join(f.distDir, 'src/pages/guide.html'), page('Guide'));
+    await generate(f, {
+      llmsMdMirrorInclude: ['src/pages/guide*'],
+      trailingSlash: 'always',
+    });
+
+    const healthy = verify(f, {
+      llmsMdMirrorInclude: ['src/pages/guide*'],
+      trailingSlash: 'always',
+    });
+    expect(healthy.ok).toBe(true);
+    expect(healthy.errors).toEqual([]);
+    expect(healthy.warnings).toEqual([]);
+    expect(healthy.checks.markdownMirrorPaths).toEqual(['guide.md']);
+
+    // If a page excluded by llmsMdMirrorInclude explicitly declares an alternate that is missing, verify still warns.
+    writeFileSync(
+      join(f.distDir, 'src/pages/about.html'),
+      '<html lang="en"><head><title>About</title><link rel="alternate" type="text/markdown" href="/missing-custom.md"></head><body><h1>About</h1></body></html>',
+    );
+    const declaredMissing = verify(f, {
+      llmsMdMirrorInclude: ['src/pages/guide*'],
+      trailingSlash: 'always',
+    });
+    expect(declaredMissing.warnings.map((w) => w.rule)).toContain('markdown-mirror-missing');
+
+    // Mismatched sitemap trailing slash and canonical trailing slash warn when trailingSlash: 'always'
+    await generate(f, { llmsMdMirrorInclude: ['src/pages/guide*'], trailingSlash: 'always' });
+    writeFileSync(
+      join(f.distDir, 'sitemap.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?><urlset><url><loc>${siteUrl}/</loc></url><url><loc>${siteUrl}/about</loc></url><url><loc>${siteUrl}/guide/</loc></url></urlset>`,
+    );
+    writeFileSync(
+      join(f.distDir, 'src/pages/guide.html'),
+      `<html lang="en"><head><title>Guide</title><link rel="canonical" href="${siteUrl}/guide"><link rel="describedby" type="text/markdown" href="/llms.txt"></head><body><h1>Guide</h1></body></html>`,
+    );
+    const trailingMismatch = verify(f, {
+      llmsMdMirrorInclude: ['src/pages/guide*'],
+      trailingSlash: 'always',
+    });
+    expect(trailingMismatch.warnings.map((w) => w.rule)).toEqual(expect.arrayContaining([
+      'sitemap-trailing-slash',
+      'canonical-mismatch',
+    ]));
+  });
+
+  it('verifies locale-scoped feeds when feedByLocale is enabled', async () => {
+    const f = fixture();
+    writeFileSync(
+      join(f.distDir, 'src/pages/zh.html'),
+      '<html lang="zh"><head><title>首页</title><meta name="description" content="中文"></head><body><h1>中文</h1></body></html>',
+    );
+    await generate(f, { feedByLocale: true, llmsMdMirror: false });
+
+    const healthy = verify(f, { feedByLocale: true, llmsMdMirror: false });
+    expect(healthy.ok).toBe(true);
+    expect(healthy.warnings).toEqual([]);
+
+    unlinkSync(join(f.distDir, 'zh/feed.xml'));
+    const missingLocaleFeed = verify(f, { feedByLocale: true, llmsMdMirror: false });
+    expect(missingLocaleFeed.warnings.some((w) => w.rule === 'feed-link-invalid' && w.path === 'zh/feed.xml')).toBe(true);
+  });
 });
